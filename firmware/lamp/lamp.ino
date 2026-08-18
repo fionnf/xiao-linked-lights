@@ -22,6 +22,7 @@
 //     test           walk one pixel down the strip to check length and colour order
 //     chain          replay the startup animation
 //     sync           announce state so the other lamp can catch up
+//     mesh           reboot into the Meshtastic build (long range, phone app)
 //     groups <0-4>   force a group count; 0 = random 2-3 per scene (default)
 //     bright <0-1>   global brightness
 //     fade <n>       crossfade length in frames (60 ~= 1 s)
@@ -33,6 +34,8 @@
 #include "colour.h"
 #include "touch.h"
 #include "link.h"
+#include <esp_ota_ops.h>
+#include <esp_system.h>
 
 static Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_DATA, NEO_GRBW + NEO_KHZ800);
 static ColourEngine engine;
@@ -205,6 +208,26 @@ static void handleSerial() {
         if (radioOk) radioLink.broadcastColour(c.r, c.g, c.b, c.w);
         Serial.printf("[colour] rgbw(%u,%u,%u,%u) applied and broadcast\n",
                       c.r, c.g, c.b, c.w);
+      }
+    } else if (!strcmp(line, "mesh")) {
+      // Both firmwares live in flash at once - this build in app1, the
+      // Meshtastic build in app0 - because they share an identical 8 MB
+      // partition table. Switching is therefore just a matter of pointing the
+      // bootloader at the other slot; nothing is erased and nothing is
+      // downloaded, so it is instant and reversible.
+      const esp_partition_t *other =
+          esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+                                   ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
+      if (!other) {
+        Serial.println("[mesh] app0 not found - is the Meshtastic build flashed?");
+      } else if (esp_ota_set_boot_partition(other) != ESP_OK) {
+        Serial.println("[mesh] could not set boot partition");
+      } else {
+        Serial.println("[mesh] rebooting into Meshtastic. To come back, send a");
+        Serial.println("       Meshtastic text message saying: lamp fast");
+        strip.clear(); strip.show();
+        delay(300);
+        esp_restart();
       }
     } else if (!strcmp(line, "chain")) {
       Serial.println("[chain] replaying the startup animation");
