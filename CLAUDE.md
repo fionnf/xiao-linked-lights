@@ -470,3 +470,54 @@ Reference implementation: `diagnostics/link_test/link_test.ino`.
    variant edit is written out in section 9
 3. LEDs and capacitive touch. Free pins now: GPIO1, GPIO6, GPIO21 is the module
    button, GPIO48 the module LED. Note GPIO43/44 (D6/D7) are also free.
+
+
+---
+
+## 11. *** MESHTASTIC WORKING END-TO-END *** (2026-08-18)
+
+Custom variant `xiao-lamp` built from meshtastic/firmware v2.7.26.54e0d8d and
+flashed to both boards. Source of truth for the variant is `meshtastic-variant/`
+in this repo (the `meshtastic-firmware/` clone is gitignored).
+
+```
+Connected to radio
+Owner: Meshtastic d144 (d144)     pioEnv: "xiao-lamp"     hasBluetooth: true
+lora.region: 3 (EU_868)
+Primary channel URL: https://meshtastic.org/e/#CgcSAQE6AggNEhkIARj6ASALKAU4A0ADSAFQG2gBwAYB0AYC
+```
+
+Mesh formed, both nodes present, direct contact:
+```
+1  Meshtastic d144  !9716d144
+2  Meshtastic d130  !9716d130   SNR 6 dB   Hops 0
+```
+
+Broadcast delivered between them:
+```
+*** RECEIVED on d130: 'LAMP BROADCAST TEST'  from=!9716d144  rssi=-31  snr=6.0
+```
+
+Both advertise over BLE as `Meshtastic_d130` / `Meshtastic_d144`; the phone app
+pairs with the fixed PIN **123456** (fixed rather than random because no screen is
+attached).
+
+### Gotchas found here
+
+- **Direct messages fail with `PKI_UNKNOWN_PUBKEY`.** Meshtastic 2.5+ encrypts DMs
+  with per-node public keys, and these two have not exchanged keys. **Broadcast on
+  the shared channel works fine and is what the lamps want anyway** - both lamps
+  should hear every colour change. Do not burn time on DMs.
+- **Board A intermittently enumerates without a USB serial node.** It stays fully
+  alive on BLE and LoRa; only `/dev/cu.*` is missing. A replug restores it. Do not
+  assume the board has failed - check the BLE scan first.
+- `hw_model` stays 81 so both report as `PRIVATE_HW`. Expected for an out-of-tree
+  variant, harmless.
+- Setting `lora.region` reboots the node and the USB port re-enumerates; a read
+  issued immediately after will fail with `[Errno 6] Device not configured`. Wait
+  ~15 s.
+
+### Still open
+- Both lamps sit on the **default public LongFast channel**. For a private pair,
+  create a channel with a random PSK and share the channel URL between them.
+- Colour payload protocol not yet built.
