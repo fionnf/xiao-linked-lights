@@ -9,12 +9,18 @@
 // and wait fifteen seconds for is broken, so colour rides on RadioLib directly.
 // The Meshtastic build still exists as a separate firmware for the phone app.
 //
-// Wire format, 11 bytes:
-//     0      magic 0xC1
-//     1      type: 1 = SCENE, 2 = POWER
-//     2..5   counter, uint32 little-endian
-//     6..9   seed,    uint32 little-endian
-//     10     flags (bit0 = powered on, for POWER messages)
+// Wire format, 15 bytes:
+//     0       magic 0xC1
+//     1       type: 1 = SCENE, 2 = POWER, 3 = STATE
+//     2..5    counter, uint32 little-endian
+//     6..9    seed,    uint32 little-endian
+//     10..13  node id, uint32 little-endian
+//     14      flags (bit0 = powered on)
+//
+// The node id is carried explicitly rather than derived from the payload. It is
+// the tiebreak when two lamps claim the same counter, and a tiebreak has to be
+// stable and unique - an earlier version folded seed and counter together, which
+// is neither.
 //
 // Only a seed travels, not the scene: both lamps regenerate identical group
 // sizes, hues and white levels from it (see colour.h).
@@ -22,6 +28,15 @@
 // Conflict rule: last-write-wins on a Lamport counter, ties broken by the
 // higher node id. Two lamps tapped in the same instant must converge on ONE
 // scene rather than ping-ponging between two.
+//
+// STATE messages are what make the lamps SELF-HEALING. A tap is sent once, with
+// no acknowledgement and no retry, so a single lost packet would otherwise leave
+// the lamps showing different colours indefinitely - and LoRa does lose packets.
+// Every lamp therefore announces its current (counter, seed) periodically. A lamp
+// hearing a HIGHER counter adopts that scene; a lamp hearing a LOWER one answers
+// immediately with its own state, so the stale lamp catches up within a second
+// instead of waiting for the next announcement. Convergence does not depend on
+// any single packet arriving.
 
 #include <Arduino.h>
 #include <RadioLib.h>
@@ -30,12 +45,19 @@
 static const uint8_t LAMP_MAGIC = 0xC1;
 static const uint8_t LAMP_SCENE = 1;
 static const uint8_t LAMP_POWER = 2;
-static const int LAMP_PACKET_LEN = 11;
+static const uint8_t LAMP_STATE = 3;
+static const int LAMP_PACKET_LEN = 15;
+
+// How often a lamp announces its state. At SF9/BW250 this packet is ~60 ms on
+// air, so one every 20 s is ~0.3% duty cycle - comfortably inside the 1% limit
+// for the 868.0-868.6 MHz band.
+static const uint32_t STATE_INTERVAL_MS = 20000;
 
 struct LampMsg {
   uint8_t type;
   uint32_t counter;
   uint32_t seed;
+  uint32_t nodeId;
   uint8_t flags;
 };
 
@@ -74,13 +96,34 @@ class LampLink {
   void broadcastScene(uint32_t seed) {
     counter_++;
     owner_ = nodeId_;
+    seed_ = seed;
     send(LAMP_SCENE, counter_, seed, 0);
+    lastState_ = millis();
   }
+
+  // Re-announce what we are currently showing. Costs one short packet and is
+  // what lets a lamp that missed a tap - or that just booted - catch up.
+  void announceState() {
+    send(LAMP_STATE, counter_, seed_, poweredOn_ ? 1 : 0);
+    lastState_ = millis();
+  }
+
+  // Call every loop; announces on a jittered interval. The jitter matters:
+  // without it two lamps that booted together would announce in lockstep and
+  // could collide on air every single time.
+  void tick() {
+    uint32_t now = millis();
+    if (now - lastState_ > STATE_INTERVAL_MS + (nodeId_ % 3000)) announceState();
+  }
+
+  void setPowered(bool on) { poweredOn_ = on; }
+  void setSeed(uint32_t s) { seed_ = s; }
 
   void broadcastPower(bool on) {
     counter_++;
     owner_ = nodeId_;
-    send(LAMP_POWER, counter_, 0, on ? 1 : 0);
+    poweredOn_ = on;
+    send(LAMP_POWER, counter_, seed_, on ? 1 : 0);
   }
 
   // Poll for an inbound message. Returns true and fills `out` when a packet
@@ -111,15 +154,26 @@ class LampLink {
     m.type = buf[1];
     memcpy(&m.counter, buf + 2, 4);
     memcpy(&m.seed, buf + 6, 4);
-    m.flags = buf[10];
+    memcpy(&m.nodeId, buf + 10, 4);
+    m.flags = buf[14];
+    if (m.nodeId == nodeId_) return false;      // ignore our own echo
 
     // Compare BEFORE advancing our own counter, or we would be comparing the
     // remote counter against a copy of itself and every message would tie.
-    uint32_t src = m.seed ^ m.counter;   // stable tiebreak that needs no extra bytes
-    bool wins = m.counter > counter_ || (m.counter == counter_ && src > owner_);
-    if (m.counter > counter_) counter_ = m.counter;
-    if (!wins) return false;
-    owner_ = src;
+    bool wins = m.counter > counter_ ||
+                (m.counter == counter_ && m.nodeId > owner_);
+
+    if (!wins) {
+      // We are ahead of them. Say so straight away rather than waiting for the
+      // next scheduled announcement - this is what makes a lamp that missed a
+      // tap converge in about a second.
+      if (m.type == LAMP_STATE && m.counter < counter_) announceState();
+      return false;
+    }
+
+    counter_ = m.counter;
+    owner_ = m.nodeId;
+    seed_ = m.seed;
     out = m;
     return true;
   }
@@ -134,7 +188,8 @@ class LampLink {
     buf[1] = type;
     memcpy(buf + 2, &counter, 4);
     memcpy(buf + 6, &seed, 4);
-    buf[10] = flags;
+    memcpy(buf + 10, &nodeId_, 4);
+    buf[14] = flags;
     radio_->transmit(buf, LAMP_PACKET_LEN);   // ~91 ms at SF9/BW250
     radio_->startReceive();
   }
@@ -145,5 +200,8 @@ class LampLink {
   uint32_t nodeId_ = 0;
   uint32_t counter_ = 0;
   uint32_t owner_ = 0;
+  uint32_t seed_ = 1;
+  uint32_t lastState_ = 0;
+  bool poweredOn_ = true;
   float lastRssi_ = 0, lastSnr_ = 0;
 };

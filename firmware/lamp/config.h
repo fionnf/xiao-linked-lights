@@ -44,12 +44,20 @@ static const uint8_t TINT_PALETTE[][3] = {
 };
 static const int TINT_COUNT = sizeof(TINT_PALETTE) / sizeof(TINT_PALETTE[0]);
 
-// Independent colour groups along the strip. Scaled up from the 10-LED build:
-// 3 groups of up to 8 would cover a fifth of a 39-LED strip and read as one
-// blob, so both the count and the size range grow with the strip.
-static const int NUM_GROUPS = 6;
-static const int GROUP_MIN_LEDS = 2;
-static const int GROUP_MAX_LEDS = 12;
+// Independent colour groups along the strip.
+//
+// Six groups on 39 LEDs read as noise - too many colour changes in too short a
+// run to see any of them as a block. Two or three large bands is the look, so
+// the count is now RANDOM per tap between GROUPS_MIN and GROUPS_MAX, which also
+// stops every scene having the same rhythm.
+//
+// MAX_GROUPS only sizes the arrays; the number actually drawn is chosen per
+// scene and unused groups are given size 0.
+static const int MAX_GROUPS = 4;
+static const int GROUPS_MIN = 2;
+static const int GROUPS_MAX = 3;
+static const int GROUP_MIN_LEDS = 8;
+static const int GROUP_MAX_LEDS = 28;
 
 // ---- Fade / breathing ------------------------------------------------------
 static const int FADE_STEPS = 60;            // ~1 s at 60 fps

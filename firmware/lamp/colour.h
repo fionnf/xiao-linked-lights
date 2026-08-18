@@ -88,12 +88,12 @@ class ColourEngine {
   void begin(uint32_t seed) {
     poweredOn_ = true;
     powerLevel_ = 1.0f;
-    for (int i = 0; i < NUM_GROUPS; i++) {
+    for (int i = 0; i < MAX_GROUPS; i++) {
       pos_[i] = targetPos_[i] = 0.0f;
       wLevel_[i] = wTarget_[i] = wStart_[i] = 1.0f;
       startPos_[i] = 0.0f;
-      fadeStep_[i] = FADE_STEPS;              // start settled, not mid-fade
-      breathePhase_[i] = i * (6.2831853f / NUM_GROUPS);
+      fadeStep_[i] = fadeSteps_;              // start settled, not mid-fade
+      breathePhase_[i] = i * (6.2831853f / MAX_GROUPS);
     }
     applyScene(seed);
   }
@@ -104,8 +104,12 @@ class ColourEngine {
     if (!poweredOn_) return;
     seed_ = seed;
     Rng rng(seed);
+    // Drawn from the seed, so both lamps pick the SAME number of groups.
+    active_ = groupsOverride_ > 0 ? groupsOverride_
+                                  : rng.intRange(GROUPS_MIN, GROUPS_MAX);
+    if (active_ > MAX_GROUPS) active_ = MAX_GROUPS;
     partition(rng);
-    for (int i = 0; i < NUM_GROUPS; i++) {
+    for (int i = 0; i < active_; i++) {
       startPos_[i] = pos_[i];
       targetPos_[i] = rng.range(0.0f, 1.0f);
       wStart_[i] = wLevel_[i];
@@ -121,13 +125,26 @@ class ColourEngine {
 
   bool poweredOn() const { return poweredOn_; }
   uint32_t seed() const { return seed_; }
+  int activeGroups() const { return active_; }
+
+  // Runtime tuning. These exist because judging how a scene reads is a visual
+  // decision, and a reflash cycle per adjustment makes that painful.
+  void setBrightness(float b) { brightness_ = constrain(b, 0.0f, 1.0f); }
+  float brightness() const { return brightness_; }
+  void setFadeSteps(int n) { fadeSteps_ = max(1, n); }
+  int fadeSteps() const { return fadeSteps_; }
+  void setGroupsOverride(int n) { groupsOverride_ = (n <= 0) ? 0 : min(n, MAX_GROUPS); }
+  int groupsOverride() const { return groupsOverride_; }
+  void setBreatheDepth(float d) { breatheDepth_ = constrain(d, 0.0f, 1.0f); }
+  float breatheDepth() const { return breatheDepth_; }
+  int groupSize(int i) const { return (i >= 0 && i < MAX_GROUPS) ? groupSize_[i] : 0; }
 
   // Advance fades, breathing and the power ramp by one frame.
   void tick(uint32_t nowMs) {
-    for (int i = 0; i < NUM_GROUPS; i++) {
-      if (fadeStep_[i] < FADE_STEPS) {
+    for (int i = 0; i < MAX_GROUPS; i++) {
+      if (fadeStep_[i] < fadeSteps_) {
         fadeStep_[i]++;
-        float t = ease((float)fadeStep_[i] / FADE_STEPS);
+        float t = ease((float)fadeStep_[i] / fadeSteps_);
         // Interpolate from the fade's START value, not the current one:
         // lerping from `current` each step compounds the easing and a
         // nominal 1 s fade finishes in about a third of that.
@@ -146,15 +163,15 @@ class ColourEngine {
   Rgbw ledColour(int index) const {
     int i = REVERSE_LEDS ? (NUM_LEDS - 1 - index) : index;
     int g = 0, acc = 0;
-    for (; g < NUM_GROUPS; g++) {
+    for (; g < MAX_GROUPS; g++) {
       acc += groupSize_[g];
       if (i < acc) break;
     }
-    if (g >= NUM_GROUPS) g = NUM_GROUPS - 1;
+    if (g >= MAX_GROUPS) g = active_ - 1;
 
     Rgbw c = paletteColour(pos_[g]);
-    float breathe = 1.0f + BREATHE_DEPTH * sinf(breathePhase_[g]);
-    float scale = LED_BRIGHTNESS * powerLevel_ * breathe;
+    float breathe = 1.0f + breatheDepth_ * sinf(breathePhase_[g]);
+    float scale = brightness_ * powerLevel_ * breathe;
     if (scale < 0.0f) scale = 0.0f;
     if (scale > 1.0f) scale = 1.0f;
 
@@ -170,26 +187,32 @@ class ColourEngine {
   // Random group sizes that always sum to exactly NUM_LEDS. Any shortfall
   // would leave trailing LEDs showing a stale colour from the previous scene.
   void partition(Rng &rng) {
+    for (int i = 0; i < MAX_GROUPS; i++) groupSize_[i] = 0;
     int remaining = NUM_LEDS;
-    for (int i = 0; i < NUM_GROUPS; i++) {
-      int left = NUM_GROUPS - i;
+    for (int i = 0; i < active_; i++) {
+      int left = active_ - i;
       int lo = max(GROUP_MIN_LEDS, remaining - (left - 1) * GROUP_MAX_LEDS);
       int hi = min(GROUP_MAX_LEDS, remaining - (left - 1) * GROUP_MIN_LEDS);
       if (lo > hi) lo = hi = max(1, remaining - (left - 1));
-      int size = (i == NUM_GROUPS - 1) ? remaining : rng.intRange(lo, hi);
+      int size = (i == active_ - 1) ? remaining : rng.intRange(lo, hi);
       groupSize_[i] = size;
       remaining -= size;
     }
-    if (remaining != 0) groupSize_[NUM_GROUPS - 1] += remaining;
+    if (remaining != 0) groupSize_[active_ - 1] += remaining;
   }
 
-  float pos_[NUM_GROUPS], startPos_[NUM_GROUPS], targetPos_[NUM_GROUPS];
-  float wLevel_[NUM_GROUPS], wStart_[NUM_GROUPS], wTarget_[NUM_GROUPS];
-  float breathePhase_[NUM_GROUPS];
-  int fadeStep_[NUM_GROUPS];
-  int groupSize_[NUM_GROUPS];
+  float pos_[MAX_GROUPS], startPos_[MAX_GROUPS], targetPos_[MAX_GROUPS];
+  float wLevel_[MAX_GROUPS], wStart_[MAX_GROUPS], wTarget_[MAX_GROUPS];
+  float breathePhase_[MAX_GROUPS];
+  int fadeStep_[MAX_GROUPS];
+  int groupSize_[MAX_GROUPS];
   bool poweredOn_ = true;
   float powerLevel_ = 1.0f;
   int powerDir_ = 0;
   uint32_t seed_ = 1;
+  int active_ = GROUPS_MAX;
+  int groupsOverride_ = 0;              // 0 = random per scene
+  float brightness_ = LED_BRIGHTNESS;
+  int fadeSteps_ = FADE_STEPS;
+  float breatheDepth_ = BREATHE_DEPTH;
 };
