@@ -1,0 +1,83 @@
+    1                                    2                                            3                                                       4                                        5             6
+
+
+
+
+A                                                                                                                                                                                                    A
+
+
+                                                                                                                                                                    +3V3
+                                                                                                                                             J3
+                                                                                                                                           30pin
+                                                                                                                                          DC0.3A
+
+                                                                                                                                     2                1              2   R1
+                                                                                                                   GND                 2           1          VIN
+                                                                                                                                     4                3                  10K
+                                                     U1                                                                                4           3
+                                                                                                                                     6                5      GND     1   5%
+                                                Wio-SX1262                                                 LORA_SPI_SCK                6           5
+                                                                                                                                     8                7
+                                                                                                          LORA_SPI_MISO                8           7                    LORA_RST
+                            LORA_RF_SW1 1                                                                                           10                9
+                                              RF_SW1                                                      LORA_SPI_MOSI                10          9          LORA_SPI_NSS
+                            LORA_SPI_MISO 2                       12 LORA_DIO1                                                      12               11
+                                              MISO           DIO1                                                                      12         11          LORA_BUSY
+                            LORA_SPI_MOSI 3                       11 LORA_BUSY                                                      14               13
+                                              MOSI           BUSY                                                                      14         13          LORA_DIO1
+                            LORA_SPI_SCK 4                        10                                                                16               15
+                                              SCK            GND2           GND                                                        16         15          LORA_RF_SW1
+                            LORA_RST      5                        9                                                                18               17
+                                              RST             ANT                                                                      18         17          GPIO47
+                            LORA_SPI_NSS 6                                                                                          20               19
+                                              NSS                                                         GPIO14                       20         19          GPIO48
+                                          7                                                                                         22               21
+            TP1         GND                   GND1                                                        GPIO15                       22         21
+                                          8                                                                                         24               23
+        Test Point           +3V3             VCC                                                         GPIO16                       24         23                 +3V3
+                                                                                                                                    26               25
+                                                                                                          GPIO17                       26         25
+                                                                                                                                    28               27
+B                                                                                                         GPIO18                       28         27             GND                                 B
+                                                                                                                                    30               29
+                                                                                                                         VIN           30         29           GPIO21
+
+
+
+
+                                                                                                                                R2
+                                                                                                                                                   D1
+                                                                                                                               330R
+                                                                                                                                                  Green
+                                                                                                                                1%
+                                                                                                                               1      2
+                                                                                                               GND                                            GPIO48
+
+                     LORA_DIO1      1                                             1                                                               +3V3
+                                                                   VIN
+                     LORA_BUSY      2                                             2
+                                                                   GND
+                     LORA_RST       3                                             3
+                                                                  +3V3
+                     LORA_SPI_NSS   4         J1                  LORA_SPI_MOSI   4   J2                                                           2   R3
+                     LORA_RF_SW1    5         Header 1x7 2.54mm   LORA_SPI_MISO   5   Header 1x7 2.54mm
+                                                                                                                                       K1              10K
+                                    6                             LORA_SPI_SCK    6
+                                                                                                                                   TS-1185E        1   5%
+                                    7                                             7
+                                                                                                               GND                                            GPIO21
+
+
+C                                                                                                                                                                                                    C
+
+
+
+
+                                                                                                                                   Sheet: /
+D                                                                                                                                  File: Wio-SX1262          for XIAO V1.0.kicad_sch                 D
+
+                                                                                                                                   Title:
+                                                                                                                                   Size: A4           Date:                                Rev:
+                                                                                                                                   KiCad E.D.A. 8.0.0                                      Id: 1/1
+    1                                    2                                            3                                                       4                                        5             6
+

@@ -1,0 +1,20 @@
+# python environments
+.venv/
+.pio-venv/
+
+# upstream Meshtastic source (25 MB clone; re-clone with the tag in CLAUDE.md)
+meshtastic-firmware/
+
+# prebuilt firmware images and the 170 MB release bundle
+firmware/*.bin
+firmware/*.zip
+
+# arduino-cli build output
+**/build/
+
+# macOS
+.DS_Store
+
+# python bytecode
+__pycache__/
+*.pyc
