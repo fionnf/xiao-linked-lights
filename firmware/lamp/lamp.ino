@@ -15,6 +15,7 @@
 //     seed <n>       apply a specific scene by seed
 //     power          toggle both lamps on/off
 //     pos <0..1>     put the whole strip at one palette position
+//     colour R G B W an explicitly chosen colour, synced to the other lamp
 //     status         print state, radio stats and touch readings
 //     cal            re-baseline the touch sensor
 //     touchmon       stream live touch readings - use this WHILE wiring the pad
@@ -101,6 +102,7 @@ static void showFrame() {
 static void applyLocalTap() {
   uint32_t seed = makeSeed();
   engine.applyScene(seed);
+  radioLink.setSolidFlag(false);
   if (radioOk) radioLink.broadcastScene(seed);
   Serial.printf("[tap] new scene seed=%lu counter=%lu%s\n",
                 (unsigned long)seed, (unsigned long)radioLink.counter(),
@@ -146,12 +148,20 @@ static void handleSerial() {
                     p, c.r, c.g, c.b, c.w);
       delay(1500);
     } else if (!strcmp(line, "status")) {
+      if (engine.isSolid()) {
+        Rgbw c = engine.solidColour();
+        Serial.printf("mode=colour rgbw(%u,%u,%u,%u)\n", c.r, c.g, c.b, c.w);
+      } else {
+        Serial.println("mode=scene");
+      }
       Serial.printf("groups=%d sizes=", engine.activeGroups());
       for (int i = 0; i < MAX_GROUPS; i++)
         if (engine.groupSize(i)) Serial.printf("%d ", engine.groupSize(i));
       Serial.printf(" bright=%.2f fade=%d breathe=%.2f drift=%lus\n",
                     engine.brightness(), engine.fadeSteps(), engine.breatheDepth(),
                     (unsigned long)driftSecs);
+      Serial.printf("code=%08lx  <- both lamps must show the same code\n",
+                    (unsigned long)engine.visualCode());
       Serial.printf("node=%08lx counter=%lu seed=%lu power=%s radio=%s\n",
                     (unsigned long)nodeId, (unsigned long)radioLink.counter(),
                     (unsigned long)engine.seed(), engine.poweredOn() ? "on" : "off",
@@ -180,13 +190,31 @@ static void handleSerial() {
       driftSecs = strtoul(line + 6, nullptr, 10);
       Serial.printf("[drift] %s\n", driftSecs ? (String(driftSecs) + " s").c_str()
                                               : "off");
+    } else if (!strncmp(line, "colour ", 7) || !strncmp(line, "color ", 6)) {
+      // "colour R G B W" - an explicitly chosen colour, as opposed to a scene
+      // generated from a seed. Broadcast so both lamps show the same one.
+      const char *a = strchr(line, ' ') + 1;
+      int r = 0, g = 0, b = 0, w = 0;
+      int got = sscanf(a, "%d %d %d %d", &r, &g, &b, &w);
+      if (got < 3) {
+        Serial.println("? usage: colour R G B W   (0-255 each, W optional)");
+      } else {
+        Rgbw c{(uint8_t)constrain(r,0,255), (uint8_t)constrain(g,0,255),
+               (uint8_t)constrain(b,0,255), (uint8_t)constrain(w,0,255)};
+        engine.setSolid(c);
+        if (radioOk) radioLink.broadcastColour(c.r, c.g, c.b, c.w);
+        Serial.printf("[colour] rgbw(%u,%u,%u,%u) applied and broadcast\n",
+                      c.r, c.g, c.b, c.w);
+      }
     } else if (!strcmp(line, "chain")) {
       Serial.println("[chain] replaying the startup animation");
       startupChain();
     } else if (!strcmp(line, "sync")) {
       if (radioOk) radioLink.announceState();
-      Serial.printf("[sync] announced counter=%lu seed=%lu - the other lamp will\n"
+      radioLink.setCode(engine.visualCode());
+      Serial.printf("[sync] announced code=%08lx counter=%lu seed=%lu - the other lamp will\n"
                     "       adopt it if it is behind, or correct us if it is ahead\n",
+                    (unsigned long)engine.visualCode(),
                     (unsigned long)radioLink.counter(), (unsigned long)engine.seed());
     } else if (!strcmp(line, "touchmon")) {
       // Live readings while the pad is being wired. A pin with nothing attached
@@ -272,13 +300,21 @@ void loop() {
   if (radioOk) {
     LampMsg m;
     if (radioLink.poll(m)) {
-      if (m.type == LAMP_SCENE || m.type == LAMP_STATE) {
+      if (m.type == LAMP_COLOUR) {
+        Rgbw c{(uint8_t)(m.seed & 0xFF), (uint8_t)((m.seed >> 8) & 0xFF),
+               (uint8_t)((m.seed >> 16) & 0xFF), (uint8_t)((m.seed >> 24) & 0xFF)};
+        engine.setSolid(c);
+        radioLink.setSolidFlag(true);
+        Serial.printf("[rx] colour rgbw(%u,%u,%u,%u) counter=%lu rssi=%.1f\n",
+                      c.r, c.g, c.b, c.w, (unsigned long)m.counter, radioLink.lastRssi());
+      } else if (m.type == LAMP_SCENE || m.type == LAMP_STATE) {
         // A STATE message is handled exactly like a SCENE. poll() only returns
         // messages that genuinely win, so a STATE that arrives because we missed
         // a tap corrects us, and one that merely repeats what we already show
         // never gets here.
-        if (m.seed != engine.seed()) {
+        if (m.seed != engine.seed() || engine.isSolid()) {
           engine.applyScene(m.seed);
+          radioLink.setSolidFlag(false);
           Serial.printf("[rx] %s seed=%lu counter=%lu rssi=%.1f snr=%.1f%s\n",
                         m.type == LAMP_STATE ? "resync" : "scene",
                         (unsigned long)m.seed, (unsigned long)m.counter,
@@ -300,6 +336,11 @@ void loop() {
       }
     }
   }
+
+  // The link advertises our fingerprint, so it has to be recomputed whenever
+  // the displayed state could have changed - cheap, and being stale here would
+  // defeat the whole point of having a fingerprint.
+  if (radioOk) radioLink.setCode(engine.visualCode());
 
   // Periodic state announcement. This is the safety net: a tap is sent once
   // with no retry, so without it a single lost packet would leave the lamps

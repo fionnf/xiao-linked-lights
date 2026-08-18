@@ -15,7 +15,9 @@
 //     2..5    counter, uint32 little-endian
 //     6..9    seed,    uint32 little-endian
 //     10..13  node id, uint32 little-endian
-//     14      flags (bit0 = powered on)
+//     14..17  visual code, uint32 little-endian - a fingerprint of exactly what
+//             the sender's strip is showing (mode + colour/seed + band layout)
+//     18      flags (bit0 = powered on)
 //
 // The node id is carried explicitly rather than derived from the payload. It is
 // the tiebreak when two lamps claim the same counter, and a tiebreak has to be
@@ -46,18 +48,23 @@ static const uint8_t LAMP_MAGIC = 0xC1;
 static const uint8_t LAMP_SCENE = 1;
 static const uint8_t LAMP_POWER = 2;
 static const uint8_t LAMP_STATE = 3;
-static const int LAMP_PACKET_LEN = 15;
+// A colour picked by a human. The four seed bytes carry R,G,B,W instead of a
+// seed - a scene is generated FROM a seed, but a chosen colour IS the payload,
+// and RGBW happens to be exactly four bytes.
+static const uint8_t LAMP_COLOUR = 4;
+static const int LAMP_PACKET_LEN = 19;
 
 // How often a lamp announces its state. At SF9/BW250 this packet is ~60 ms on
 // air, so one every 20 s is ~0.3% duty cycle - comfortably inside the 1% limit
 // for the 868.0-868.6 MHz band.
-static const uint32_t STATE_INTERVAL_MS = 20000;
+static const uint32_t STATE_INTERVAL_MS = 15000;
 
 struct LampMsg {
   uint8_t type;
   uint32_t counter;
   uint32_t seed;
   uint32_t nodeId;
+  uint32_t code;      // sender's visual fingerprint
   uint8_t flags;
 };
 
@@ -93,6 +100,8 @@ class LampLink {
   uint32_t nodeId() const { return nodeId_; }
 
   // Claim a new scene locally and put it on air.
+  void setCode(uint32_t c) { code_ = c; }
+
   void broadcastScene(uint32_t seed) {
     counter_++;
     owner_ = nodeId_;
@@ -104,7 +113,7 @@ class LampLink {
   // Re-announce what we are currently showing. Costs one short packet and is
   // what lets a lamp that missed a tap - or that just booted - catch up.
   void announceState() {
-    send(LAMP_STATE, counter_, seed_, poweredOn_ ? 1 : 0);
+    send(solid_ ? LAMP_COLOUR : LAMP_STATE, counter_, seed_, poweredOn_ ? 1 : 0);
     lastState_ = millis();
   }
 
@@ -118,6 +127,20 @@ class LampLink {
 
   void setPowered(bool on) { poweredOn_ = on; }
   void setSeed(uint32_t s) { seed_ = s; }
+
+  void broadcastColour(uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
+    counter_++;
+    owner_ = nodeId_;
+    solid_ = true;
+    seed_ = ((uint32_t)r) | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)w << 24);
+    send(LAMP_COLOUR, counter_, seed_, poweredOn_ ? 1 : 0);
+    lastState_ = millis();
+  }
+
+  // State announcements must say WHICH kind of thing we are showing, or a lamp
+  // in picked-colour mode would re-announce it as a seed and the other end would
+  // generate a random scene from four colour bytes.
+  void setSolidFlag(bool s) { solid_ = s; }
 
   void broadcastPower(bool on) {
     counter_++;
@@ -155,19 +178,31 @@ class LampLink {
     memcpy(&m.counter, buf + 2, 4);
     memcpy(&m.seed, buf + 6, 4);
     memcpy(&m.nodeId, buf + 10, 4);
-    m.flags = buf[14];
+    memcpy(&m.code, buf + 14, 4);
+    m.flags = buf[18];
     if (m.nodeId == nodeId_) return false;      // ignore our own echo
+
+    // If the fingerprints already match we are showing the same thing, whatever
+    // the counters say. Nothing to do, and nothing to argue about.
+    if (m.code == code_ && m.counter <= counter_) return false;
 
     // Compare BEFORE advancing our own counter, or we would be comparing the
     // remote counter against a copy of itself and every message would tie.
+    //
+    // The extra clause matters: equal counters with DIFFERENT codes means the
+    // lamps genuinely disagree about what they are showing. Counters alone
+    // cannot break that - both sides think they are current - so fall back to
+    // the node id, which is stable and unique, and let the higher one win.
     bool wins = m.counter > counter_ ||
-                (m.counter == counter_ && m.nodeId > owner_);
+                (m.counter == counter_ && m.code != code_ && m.nodeId > owner_);
 
     if (!wins) {
       // We are ahead of them. Say so straight away rather than waiting for the
       // next scheduled announcement - this is what makes a lamp that missed a
       // tap converge in about a second.
-      if (m.type == LAMP_STATE && m.counter < counter_) announceState();
+      // We are ahead, or we win the tie. Either way the other lamp is showing
+      // something different, so tell it what we have rather than waiting.
+      if (m.code != code_) announceState();
       return false;
     }
 
@@ -189,7 +224,8 @@ class LampLink {
     memcpy(buf + 2, &counter, 4);
     memcpy(buf + 6, &seed, 4);
     memcpy(buf + 10, &nodeId_, 4);
-    buf[14] = flags;
+    memcpy(buf + 14, &code_, 4);
+    buf[18] = flags;
     radio_->transmit(buf, LAMP_PACKET_LEN);   // ~91 ms at SF9/BW250
     radio_->startReceive();
   }
@@ -201,7 +237,9 @@ class LampLink {
   uint32_t counter_ = 0;
   uint32_t owner_ = 0;
   uint32_t seed_ = 1;
+  uint32_t code_ = 0;
   uint32_t lastState_ = 0;
   bool poweredOn_ = true;
+  bool solid_ = false;
   float lastRssi_ = 0, lastSnr_ = 0;
 };

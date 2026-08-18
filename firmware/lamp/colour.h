@@ -103,6 +103,7 @@ class ColourEngine {
   void applyScene(uint32_t seed) {
     if (!poweredOn_) return;
     seed_ = seed;
+    solid_ = false;          // a new scene leaves picked-colour mode
     Rng rng(seed);
     // Drawn from the seed, so both lamps pick the SAME number of groups.
     active_ = groupsOverride_ > 0 ? groupsOverride_
@@ -117,6 +118,19 @@ class ColourEngine {
       fadeStep_[i] = 0;
     }
   }
+
+  // Explicit colour, chosen by a human rather than generated from a seed.
+  // The palette can only express warm-white-to-tint along one axis, so a real
+  // colour picker needs its own path: `solid` bypasses the per-group palette
+  // entirely and shows one chosen RGBW across the strip.
+  void setSolid(Rgbw c) {
+    solidStart_ = solid_ ? solidNow_ : paletteColour(pos_[0]);
+    solidTarget_ = c;
+    solidStep_ = 0;
+    solid_ = true;
+  }
+  bool isSolid() const { return solid_; }
+  Rgbw solidColour() const { return solidTarget_; }
 
   void togglePower() {
     poweredOn_ = !poweredOn_;
@@ -139,6 +153,34 @@ class ColourEngine {
   float breatheDepth() const { return breatheDepth_; }
   int groupSize(int i) const { return (i >= 0 && i < MAX_GROUPS) ? groupSize_[i] : 0; }
 
+  uint32_t packedSolid() const {
+    return ((uint32_t)solidTarget_.r) | ((uint32_t)solidTarget_.g << 8) |
+           ((uint32_t)solidTarget_.b << 16) | ((uint32_t)solidTarget_.w << 24);
+  }
+
+  // A fingerprint of EXACTLY what the strip is showing: the mode, the colour or
+  // seed behind it, how many bands there are and how long each one is.
+  //
+  // The point is detectability. Two lamps can agree on a counter and still be
+  // showing different things - a dropped byte, a half-applied scene, firmware
+  // that was reflashed mid-session. Comparing a single number catches all of
+  // that, where comparing counters alone cannot: identical code means identical
+  // strip, different code means genuinely out of sync, and the lamps can then
+  // do something about it instead of quietly disagreeing.
+  //
+  // FNV-1a: small, well-mixed, and trivially identical on both lamps.
+  uint32_t visualCode() const {
+    uint32_t h = 2166136261u;
+    auto mix = [&h](uint32_t v) {
+      for (int i = 0; i < 4; i++) { h ^= (v >> (i * 8)) & 0xFF; h *= 16777619u; }
+    };
+    mix(solid_ ? 1u : 0u);
+    mix(solid_ ? packedSolid() : seed_);
+    mix((uint32_t)active_);
+    for (int i = 0; i < MAX_GROUPS; i++) mix((uint32_t)groupSize_[i]);
+    return h;
+  }
+
   // Advance fades, breathing and the power ramp by one frame.
   void tick(uint32_t nowMs) {
     for (int i = 0; i < MAX_GROUPS; i++) {
@@ -152,6 +194,16 @@ class ColourEngine {
         wLevel_[i] = lerpf(wStart_[i], wTarget_[i], t);
       }
       breathePhase_[i] += BREATHE_SPEED * 16.0f;
+    }
+    if (solid_ && solidStep_ < fadeSteps_) {
+      solidStep_++;
+      float t = ease((float)solidStep_ / fadeSteps_);
+      solidNow_.r = (uint8_t)lerpf(solidStart_.r, solidTarget_.r, t);
+      solidNow_.g = (uint8_t)lerpf(solidStart_.g, solidTarget_.g, t);
+      solidNow_.b = (uint8_t)lerpf(solidStart_.b, solidTarget_.b, t);
+      solidNow_.w = (uint8_t)lerpf(solidStart_.w, solidTarget_.w, t);
+    } else if (solid_) {
+      solidNow_ = solidTarget_;
     }
     if (powerDir_ > 0 && powerLevel_ < 1.0f) powerLevel_ = min(1.0f, powerLevel_ + 0.02f);
     if (powerDir_ < 0 && powerLevel_ > 0.0f) powerLevel_ = max(0.0f, powerLevel_ - 0.02f);
@@ -169,7 +221,7 @@ class ColourEngine {
     }
     if (g >= MAX_GROUPS) g = active_ - 1;
 
-    Rgbw c = paletteColour(pos_[g]);
+    Rgbw c = solid_ ? solidNow_ : paletteColour(pos_[g]);
     float breathe = 1.0f + breatheDepth_ * sinf(breathePhase_[g]);
     float scale = brightness_ * powerLevel_ * breathe;
     if (scale < 0.0f) scale = 0.0f;
@@ -215,4 +267,7 @@ class ColourEngine {
   float brightness_ = LED_BRIGHTNESS;
   int fadeSteps_ = FADE_STEPS;
   float breatheDepth_ = BREATHE_DEPTH;
+  bool solid_ = false;
+  Rgbw solidNow_{0,0,0,0}, solidStart_{0,0,0,0}, solidTarget_{0,0,0,0};
+  int solidStep_ = 0;
 };

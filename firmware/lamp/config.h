@@ -63,7 +63,10 @@ static const int GROUP_MAX_LEDS = 28;
 static const int FADE_STEPS = 60;            // ~1 s at 60 fps
 static const float BREATHE_SPEED = 0.0008f;
 static const float BREATHE_DEPTH = 0.10f;
-static const uint32_t IDLE_DRIFT_INTERVAL_S = 65;
+// Autonomous scene changes are OFF by default. With two lamps each drifting,
+// the pair changed roughly every 30 s unprompted, which reads as restless rather
+// than alive. Re-enable at runtime with `drift 65` if you want it back.
+static const uint32_t IDLE_DRIFT_INTERVAL_S = 0;
 
 // ---- Radio -----------------------------------------------------------------
 // Measured pin map for the header-wired Wio-SX1262. See CLAUDE.md section 9;
