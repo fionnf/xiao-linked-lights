@@ -153,6 +153,17 @@ class ColourEngine {
   float breatheDepth() const { return breatheDepth_; }
   int groupSize(int i) const { return (i >= 0 && i < MAX_GROUPS) ? groupSize_[i] : 0; }
 
+  // True while anything is actually moving. Used to decide how hard to drive the
+  // LED refresh: pushing 39 RGBW pixels 60 times a second holds a critical
+  // section each time, which is a real competitor to BLE and radio timing on
+  // this chip. There is no reason to pay that while the strip is settled.
+  bool isFading() const {
+    if (solid_ && solidStep_ < fadeSteps_) return true;
+    for (int i = 0; i < MAX_GROUPS; i++)
+      if (fadeStep_[i] < fadeSteps_) return true;
+    return powerDir_ != 0;
+  }
+
   uint32_t packedSolid() const {
     return ((uint32_t)solidTarget_.r) | ((uint32_t)solidTarget_.g << 8) |
            ((uint32_t)solidTarget_.b << 16) | ((uint32_t)solidTarget_.w << 24);
