@@ -521,3 +521,61 @@ attached).
 - Both lamps sit on the **default public LongFast channel**. For a private pair,
   create a channel with a random PSK and share the channel URL between them.
 - Colour payload protocol not yet built.
+
+
+---
+
+## 12. LAMP FIRMWARE (raw LoRa) - working
+
+`firmware/lamp/` is a port of the Pico/MQTT project
+(github.com/fionnf/linked_friend_lights) to XIAO ESP32-S3 + SX1262.
+
+**Transport decision: raw LoRa via RadioLib, NOT Meshtastic.** Measured on this
+hardware, same payload, same two boards:
+
+| transport | latency | delivery |
+|---|---|---|
+| Meshtastic (LongFast) | 7-20 s, mean 15 s | 5/5 |
+| Meshtastic (SHORT_FAST, hop 1) | 4.7-19.8 s, mean 10.8 s | 5/6 |
+| **raw LoRa (this firmware)** | **203-218 ms, mean 211 ms** | **5/5** |
+
+Meshtastic's delay is its transmit scheduling, not airtime - the radio itself
+completes a transmission in 91 ms. The Meshtastic build still exists
+(`meshtastic-variant/`) for the phone app and mesh range; it is a separate
+firmware for the same hardware.
+
+### Sync design: broadcast the SEED, not the scene
+
+The colour engine randomises group sizes, hues and white levels on every tap. The
+MQTT build sent the resulting scene; over LoRa that is expensive. Instead both
+lamps run the same deterministic generator from the same 32-bit seed, so four
+bytes reproduce an identical scene on both ends - randomness included.
+
+This means the PRNG must be explicit and identical everywhere: `colour.h` uses
+xorshift32, never `rand()`, whose sequence differs between implementations.
+
+Wire format, 11 bytes: magic `0xC1`, type (1=SCENE, 2=POWER), counter u32, seed
+u32, flags. Conflict resolution is last-write-wins on a Lamport counter with the
+higher node id breaking ties, so two lamps tapped simultaneously converge instead
+of ping-ponging.
+
+### Pins (39 SK6812 RGBW)
+
+```
+D6 (GPIO43) --[330R]--> DIN      D7 (GPIO44) --+--> pad
+                                                +--[1M]--> GND
+```
+D0/D5 are deliberately unused: one of them is RF_SW1 on the LoRa header.
+The Meshtastic variant had I2C on GPIO43/44 and its boot scan would have driven
+the LED data line - removed, so **the boards need the current variant build**.
+
+### Serial control
+`tap`, `seed <n>`, `power`, `pos <0..1>`, `status`, `cal` at 115200.
+
+### Gotchas
+- **Do not name a global `link`** - POSIX `link(2)` from `unistd.h` shadows it and
+  the errors point at the wrong thing entirely.
+- Touch reads the 20001 safety cap when no pad/1M resistor is attached. That is
+  the "nothing connected" signature, not a fault.
+- After flashing, `--before default-reset` puts the chip back INTO download mode.
+  Boot with `--before no-reset --after watchdog-reset`.

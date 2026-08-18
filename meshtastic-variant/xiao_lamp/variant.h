@@ -30,12 +30,18 @@
 #define BATTERY_SENSE_RESOLUTION_BITS 12
 
 /*
- * I2C is moved off GPIO5/6. The stock variant puts SDA on GPIO5, which is the
- * LoRa chip-select here - leaving it there makes the radio and the I2C scan
- * fight over the same pin. D6/D7 are free on the header and carry nothing.
+ * No I2C at all.
+ *
+ * The stock variant puts SDA on GPIO5, which is the LoRa chip-select here - a
+ * direct collision. Moving it to D6/D7 fixed that, but those are the only two
+ * header pins left for the LED strip and the touch sensor, and Meshtastic's
+ * boot-time I2C scan would drive them. Nothing is on I2C on this build (the scan
+ * finds zero devices), so it is simply removed and both pins are left free.
+ *
+ * If an I2C sensor is ever needed, the honest options are to give up the touch
+ * pin or to move the LED strip onto GPIO1/GPIO6 - but note one of those two is
+ * RF_SW1 on the LoRa header.
  */
-#define I2C_SDA 43  // D6
-#define I2C_SCL 44  // D7
 
 /*
  * No GPS and no screen on this build. The stock variant enables an L76K GPS on
