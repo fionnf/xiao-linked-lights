@@ -29,7 +29,11 @@ hear each other.
 | Startup animation | working |
 | Browser control | working — Web Serial, colour picker |
 | Meshtastic build | working — mesh range + phone app, ~10 s |
+| State persistence | fast build only — survives a power cut |
 | Capacitive touch | code written, **pad not yet wired** |
+
+Both lamps currently run the **Meshtastic** build (EU_868, LongFast, default
+channel), see each other, and hold the fast build in the second flash slot.
 
 ---
 
@@ -134,6 +138,14 @@ scheduling, not airtime — raising packets to `Priority_HIGH` changed nothing. 
 
 **Switching:** type `mesh` on the fast build's serial console; send a Meshtastic
 text message saying exactly `lamp fast` to come back.
+
+### Use LongFast if you want the actual network
+
+Meshtastic's public network runs on the **LongFast** preset. A faster preset like
+`SHORT_FAST` looks tempting for latency, but it changes the spreading factor and
+bandwidth — the lamps then cannot hear anyone else's node and nobody can hear
+them. They become a private two-node mesh that merely looks like Meshtastic. If
+the point is relaying, stay on LongFast.
 
 ---
 
@@ -267,6 +279,17 @@ development and then could not carry a clean recovery.
 
 **A board stops responding** — hold **B** (BOOT) *on the XIAO*, plug USB in, hold
 two seconds, release. Nothing here can brick a board; recovery is always USB.
+
+**A board shows as `USB JTAG_serial debug unit`** — that name covers *both* ROM
+download mode and the fast build, so it does not tell you which is running. Probe
+it: `esptool --port <p> --chip esp32s3 --before no-reset --after no-reset read-mac`.
+If that answers, the board is in download mode; boot it with
+`--after watchdog-reset`.
+
+**No other nodes in the node list** — check `rxBad` in the debug log. A non-zero
+value means foreign traffic is arriving but not decoding (wrong channel or PSK);
+zero means nothing else is transmitting in range at all, which is common indoors
+at 868 MHz. Try a window sill.
 
 **Lamps show different colours** — compare `status` on both. The `code=` line is
 the fingerprint; if they differ, `sync` on either forces reconciliation.

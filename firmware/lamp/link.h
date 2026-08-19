@@ -102,6 +102,11 @@ class LampLink {
   // Claim a new scene locally and put it on air.
   void setCode(uint32_t c) { code_ = c; }
 
+  // After a power cut a lamp restores its last counter as well as its colour.
+  // Coming back at zero would make it look older than its peer, and the first
+  // announcement either way would overwrite whichever lamp was actually right.
+  void setCounterFloor(uint32_t c) { if (c > counter_) counter_ = c; }
+
   void broadcastScene(uint32_t seed) {
     counter_++;
     owner_ = nodeId_;

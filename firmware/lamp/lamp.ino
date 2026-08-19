@@ -36,12 +36,21 @@
 #include "link.h"
 #include <esp_ota_ops.h>
 #include <esp_system.h>
+#include <Preferences.h>
 
 static Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_DATA, NEO_GRBW + NEO_KHZ800);
 static ColourEngine engine;
 static TouchSensor touch;
 // named radioLink, not link: POSIX link(2) from unistd.h shadows it
 static LampLink radioLink;
+
+// Remembered across power cuts. Without this a lamp comes back showing a random
+// scene and stays wrong until the other lamp's next announcement - up to 15 s of
+// two lamps visibly disagreeing after every power blip, which is exactly when
+// someone is looking at them.
+static Preferences prefs;
+static uint32_t pendingSaveAt = 0;
+static uint32_t savedCode = 0;
 
 static uint32_t nodeId = 0;
 static uint32_t lastFrame = 0;
@@ -94,6 +103,37 @@ static void startupChain() {
   }
 }
 
+// Debounced so a burst of changes costs one write, not one per frame. NVS
+// wear-levels, but there is no reason to hammer it.
+static void scheduleSave() { pendingSaveAt = millis() + 3000; }
+
+static void saveStateNow() {
+  pendingSaveAt = 0;
+  uint32_t code = engine.visualCode();
+  if (code == savedCode) return;          // nothing actually changed
+  savedCode = code;
+  prefs.putBool("solid", engine.isSolid());
+  prefs.putUInt("payload", engine.isSolid() ? engine.packedSolid() : engine.seed());
+  prefs.putUInt("counter", radioLink.counter());
+  prefs.putBool("power", engine.poweredOn());
+}
+
+static bool restoreState() {
+  if (!prefs.isKey("payload")) return false;
+  uint32_t payload = prefs.getUInt("payload", 0);
+  bool solid = prefs.getBool("solid", false);
+  if (solid) {
+    Rgbw c{(uint8_t)(payload & 0xFF), (uint8_t)((payload >> 8) & 0xFF),
+           (uint8_t)((payload >> 16) & 0xFF), (uint8_t)((payload >> 24) & 0xFF)};
+    engine.setSolid(c);
+  } else {
+    engine.applyScene(payload);
+  }
+  if (!prefs.getBool("power", true)) engine.togglePower();
+  savedCode = engine.visualCode();
+  return true;
+}
+
 static void showFrame() {
   for (int i = 0; i < NUM_LEDS; i++) {
     Rgbw c = engine.ledColour(i);
@@ -106,6 +146,7 @@ static void applyLocalTap() {
   uint32_t seed = makeSeed();
   engine.applyScene(seed);
   radioLink.setSolidFlag(false);
+  scheduleSave();
   if (radioOk) radioLink.broadcastScene(seed);
   Serial.printf("[tap] new scene seed=%lu counter=%lu%s\n",
                 (unsigned long)seed, (unsigned long)radioLink.counter(),
@@ -135,6 +176,7 @@ static void handleSerial() {
       Serial.printf("[seed] applied %lu and broadcast\n", (unsigned long)s);
     } else if (!strcmp(line, "power")) {
       engine.togglePower();
+      scheduleSave();
       radioLink.setPowered(engine.poweredOn());
       if (radioOk) radioLink.broadcastPower(engine.poweredOn());
       if (engine.poweredOn()) startupChain();
@@ -205,6 +247,7 @@ static void handleSerial() {
         Rgbw c{(uint8_t)constrain(r,0,255), (uint8_t)constrain(g,0,255),
                (uint8_t)constrain(b,0,255), (uint8_t)constrain(w,0,255)};
         engine.setSolid(c);
+        scheduleSave();
         if (radioOk) radioLink.broadcastColour(c.r, c.g, c.b, c.w);
         Serial.printf("[colour] rgbw(%u,%u,%u,%u) applied and broadcast\n",
                       c.r, c.g, c.b, c.w);
@@ -306,7 +349,14 @@ void setup() {
   radioOk = radioLink.begin(nodeId);
   Serial.printf("radio %s\n", radioOk ? "ready" : "FAILED TO START");
 
+  prefs.begin("lamp", false);
   engine.begin(makeSeed());
+  bool restored = restoreState();
+  Serial.printf("state: %s\n", restored ? "restored from flash" : "fresh (no saved state)");
+  // Adopt the saved counter too, so a lamp that comes back does not look
+  // "older" than its peer and get overwritten by a scene nobody chose.
+  radioLink.setCounterFloor(prefs.getUInt("counter", 0));
+  radioLink.setSolidFlag(engine.isSolid());
   radioLink.setSeed(engine.seed());
   radioLink.setPowered(true);
   startupChain();
@@ -328,6 +378,7 @@ void loop() {
                (uint8_t)((m.seed >> 16) & 0xFF), (uint8_t)((m.seed >> 24) & 0xFF)};
         engine.setSolid(c);
         radioLink.setSolidFlag(true);
+        scheduleSave();
         Serial.printf("[rx] colour rgbw(%u,%u,%u,%u) counter=%lu rssi=%.1f\n",
                       c.r, c.g, c.b, c.w, (unsigned long)m.counter, radioLink.lastRssi());
       } else if (m.type == LAMP_SCENE || m.type == LAMP_STATE) {
@@ -338,6 +389,7 @@ void loop() {
         if (m.seed != engine.seed() || engine.isSolid()) {
           engine.applyScene(m.seed);
           radioLink.setSolidFlag(false);
+        scheduleSave();
           Serial.printf("[rx] %s seed=%lu counter=%lu rssi=%.1f snr=%.1f%s\n",
                         m.type == LAMP_STATE ? "resync" : "scene",
                         (unsigned long)m.seed, (unsigned long)m.counter,
@@ -364,6 +416,7 @@ void loop() {
   // the displayed state could have changed - cheap, and being stale here would
   // defeat the whole point of having a fingerprint.
   if (radioOk) radioLink.setCode(engine.visualCode());
+  if (pendingSaveAt && millis() > pendingSaveAt) saveStateNow();
 
   // Periodic state announcement. This is the safety net: a tap is sent once
   // with no retry, so without it a single lost packet would leave the lamps

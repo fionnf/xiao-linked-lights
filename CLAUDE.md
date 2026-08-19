@@ -579,3 +579,82 @@ the LED data line - removed, so **the boards need the current variant build**.
   the "nothing connected" signature, not a fault.
 - After flashing, `--before default-reset` puts the chip back INTO download mode.
   Boot with `--before no-reset --after watchdog-reset`.
+
+
+---
+
+## 13. SESSION END STATE (2026-08-18/19) — START HERE WHEN RESUMING
+
+### What is on the boards right now
+
+Both lamps hold BOTH firmwares (identical 8 MB partition table makes this possible):
+
+| slot | firmware | state |
+|---|---|---|
+| app0 | Meshtastic 2.7.26 + LampModule | **running — user wants this as the default** |
+| app1 | fast direct-radio build | parked, updated with persistence |
+
+Radio config on both: **EU_868, LONG_FAST, hop_limit 3**, default channel/PSK.
+Both lamps see each other; colour sync verified (`code=314105f5` on both).
+
+Board A (`cc:ba:97:16:d1:30`) has the 39-LED SK6812 strip.
+Board B (`cc:ba:97:16:d1:44`) — user said "b is shining" at one point, so it may
+have a strip now too. Confirm before assuming.
+
+### The LONG_FAST discovery — important
+
+The lamps were on **SHORT_FAST** for a while (set while chasing latency). That is
+NOT the public Meshtastic preset. Different spreading factor and bandwidth means
+they could not hear anyone else's node and nobody could hear them - they were a
+private two-node mesh wearing Meshtastic's clothes. **The public network is
+LONG_FAST.** Both are now on it.
+
+Measured afterwards, 4 minutes of radio-level listening:
+```
+foreign nodes heard: 0
+txGood=30 txRelay=1 rxGood=27 rxBad=0
+```
+`rxBad=0` is the informative number: no foreign LoRa traffic is reaching the
+antenna at all. So it is not a wrong channel, wrong PSK or a marginal antenna -
+there is simply no other Meshtastic node in range of the desk. `txRelay=1` shows
+the mesh routing itself works.
+
+### Latency, measured with the real firmware applying real colours
+
+| transport | latency | notes |
+|---|---|---|
+| direct radio (app1) | **0.211 s** | 5/5 delivered |
+| Meshtastic (app0) | 1.5-17.5 s, **mean 10.5 s** | `Priority_HIGH` changed nothing |
+
+The user has chosen Meshtastic as the default despite this, for the relay
+capability. Do not silently switch them back.
+
+### Added this session
+- **State persistence (fast build only).** Colour/scene/counter/power saved to NVS,
+  debounced 3 s, restored on boot, with a counter floor so a rebooted lamp does not
+  look "older" than its peer. **Not yet ported to LampModule** - that is the
+  obvious next task, since mesh is the default.
+- **Adaptive LED refresh.** Rendering 39 RGBW pixels at 60 fps holds a critical
+  section on the same core as BLE and LoRa, and showed up as an unstable phone
+  connection. Now 60 fps only while something is fading, 20 fps when settled;
+  state announcements 30 s -> 60 s.
+- MIT licence, rewritten README, `tools/flash.sh`.
+
+### Gotcha that wasted time twice
+`USB JTAG_serial debug unit` is the USB product name for **both** ROM download mode
+**and** the fast Arduino build. A board showing it is not necessarily running the
+fast firmware - it may just be sitting in download mode after a flash. Check with
+`esptool ... --before no-reset read-mac`: if that answers, it is in download mode,
+and `--after watchdog-reset` boots it. I twice concluded a board had "switched
+firmware" when it had merely not been booted.
+
+### Next steps, in order
+1. **Wire the capacitive touch pad** — D7 (GPIO44) + 1 MΩ to GND. Code is written
+   and compiled on both builds but has never been exercised. `touchmon` on the fast
+   build streams live readings while wiring; `cal` sets the baseline. If the ratio
+   will not cross `TOUCH_THRESHOLD` (1.6), retune rather than guess.
+2. **Port persistence to LampModule** so the mesh build also survives a power cut.
+3. Confirm whether lamp B has a strip; if so, check `REVERSE_LEDS` for whichever
+   lamp joins at the DOUT end.
+4. Optional: tune `NUM_GROUPS`/band sizes by eye and bake the chosen values into
+   `config.h` - the runtime commands are not persisted.
