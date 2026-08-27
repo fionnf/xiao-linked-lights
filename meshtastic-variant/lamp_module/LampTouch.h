@@ -41,6 +41,12 @@ class TouchSensor {
   // just reset the smoothing so a noisy period doesn't linger.
   void calibrate() { level_ = 0.0f; }
 
+  // Runtime-settable, defaulting to the TOUCH_THRESHOLD compiled-in constant.
+  // The caller (LampModule) is responsible for persisting this across
+  // reboots - this class only holds the live value.
+  void setThreshold(float t) { threshold_ = constrain(t, 0.05f, 0.95f); }
+  float threshold() const { return threshold_; }
+
   enum Event { NONE, TAP, HOLD };
 
   Event update() {
@@ -49,7 +55,7 @@ class TouchSensor {
     bool rawTouched = TOUCH_ACTIVE_HIGH ? raw : !raw;
     raw_ = rawTouched;
     level_ += TOUCH_SMOOTHING * ((rawTouched ? 1.0f : 0.0f) - level_);
-    bool touched = level_ >= TOUCH_THRESHOLD;
+    bool touched = level_ >= threshold_;
 
     Event ev = NONE;
     if (touched && !wasTouched_) {
@@ -88,6 +94,7 @@ class TouchSensor {
   int pin_ = -1;
   bool raw_ = false;
   float level_ = 0;
+  float threshold_ = TOUCH_THRESHOLD;
   bool wasTouched_ = false;
   bool holdFired_ = false;
   uint32_t touchStart_ = 0;

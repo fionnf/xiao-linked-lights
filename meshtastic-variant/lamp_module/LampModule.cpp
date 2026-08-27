@@ -2,6 +2,7 @@
 #include "MeshService.h"
 #include "configuration.h"
 #include "main.h"
+#include <Preferences.h>
 
 LampModule *lampModule;
 
@@ -20,7 +21,15 @@ static const uint8_t LAMP_SCENE = 1;
 static const uint8_t LAMP_POWER = 2;
 static const uint8_t LAMP_STATE = 3;
 static const uint8_t LAMP_COLOUR = 4;
+// Not part of colour sync - a per-device touch-threshold set, unicast (never
+// broadcast) so tuning one lamp's oversensitivity never touches the other's.
+// payload carries the new threshold as raw float bits (4 bytes). Persisted to
+// NVS so it survives a reboot; see LampModule::runOnce() and handleReceived().
+static const uint8_t LAMP_THRESHOLD = 5;
 static const int LAMP_LEN = 19;
+
+static const char *PREFS_NAMESPACE = "lamp";
+static const char *PREFS_THRESHOLD_KEY = "threshold";
 
 // Meshtastic delays ordinary app traffic by seconds. A colour change is a direct
 // response to someone touching the lamp, so ask for the highest priority the
@@ -83,6 +92,22 @@ ProcessMessage LampModule::handleReceived(const meshtastic_MeshPacket &mp)
     memcpy(&node, b + 10, 4);
     memcpy(&code, b + 14, 4);
     bool on = b[18] & 1;
+
+    if (type == LAMP_THRESHOLD) {
+        // Deliberately outside the counter/code sync logic below - this is a
+        // per-device hardware setting, not shared strip state, and must only
+        // ever apply to the device it was actually addressed to.
+        if (mp.to != nodeDB->getNodeNum()) return ProcessMessage::STOP;
+        float t;
+        memcpy(&t, &payload, 4);
+        touch_.setThreshold(t);
+        Preferences prefs;
+        prefs.begin(PREFS_NAMESPACE, false);
+        prefs.putFloat(PREFS_THRESHOLD_KEY, touch_.threshold());
+        prefs.end();
+        LOG_INFO("Touch threshold set to %.2f (from 0x%x, saved)", touch_.threshold(), node);
+        return ProcessMessage::STOP;
+    }
 
     if (node == nodeDB->getNodeNum()) return ProcessMessage::STOP;   // our own echo
 
@@ -158,12 +183,12 @@ void LampModule::render()
 void LampModule::debugTouch()
 {
     uint32_t now = millis();
-    bool touched = touch_.level() >= TOUCH_THRESHOLD;
+    bool touched = touch_.level() >= touch_.threshold();
     bool edge = touched != touchWasTouched_;
     bool heartbeat = touched && (now - lastTouchLog_ >= 2000);
     if (edge || heartbeat) {
         LOG_INFO("Touch GPIO%d: raw=%d level=%.2f threshold=%.2f -> %s", PIN_TOUCH, touch_.raw() ? 1 : 0,
-                 touch_.level(), TOUCH_THRESHOLD, touched ? "TOUCHED" : "idle");
+                 touch_.level(), touch_.threshold(), touched ? "TOUCHED" : "idle");
         lastTouchLog_ = now;
     }
     touchWasTouched_ = touched;
@@ -177,12 +202,19 @@ int32_t LampModule::runOnce()
         strip_.clear();
         strip_.show();
         touch_.begin(PIN_TOUCH);
+        {
+            Preferences prefs;
+            prefs.begin(PREFS_NAMESPACE, true);
+            float saved = prefs.getFloat(PREFS_THRESHOLD_KEY, TOUCH_THRESHOLD);
+            prefs.end();
+            touch_.setThreshold(saved);
+        }
         engine_.begin((uint32_t)millis() ^ nodeDB->getNodeNum());
         code_ = engine_.visualCode();
         startupChain();
         sendState(LAMP_STATE);      // ask the mesh where we should be
-        LOG_INFO("Lamp module up: %d LEDs on GPIO%d, touch on GPIO%d",
-                 NUM_LEDS, PIN_LED_DATA, PIN_TOUCH);
+        LOG_INFO("Lamp module up: %d LEDs on GPIO%d, touch on GPIO%d, threshold=%.2f",
+                 NUM_LEDS, PIN_LED_DATA, PIN_TOUCH, touch_.threshold());
     }
 
     debugTouch();

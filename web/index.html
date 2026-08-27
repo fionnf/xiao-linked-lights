@@ -91,6 +91,42 @@ port, exactly as a tap on the lamp itself would.</div>
   </div>
 </div>
 
+<div class="card">
+  <div class="row"><strong style="font-size:13px">Device</strong></div>
+  <div class="row status"><span id="deviceInfo">node id unknown - connect first</span></div>
+  <div class="row" style="font-size:12px;color:#999">Touch sensitivity - lower = less sensitive.
+    Saved on the lamp itself (survives reboot), and remembered here per-device.</div>
+  <div class="row">
+    <label>Threshold</label>
+    <input type="range" id="thresholdSlider" min="0.05" max="0.95" step="0.01" value="0.55" disabled>
+    <span id="thresholdValue" style="width:34px;text-align:right;font-size:12px;color:#aaa">0.55</span>
+  </div>
+  <div class="row">
+    <button id="thresholdSetBtn" class="wide" disabled>Set &amp; save threshold</button>
+    <button id="rebootBtn" class="wide" disabled>Reboot</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row"><strong style="font-size:13px">Wi-Fi</strong></div>
+  <div class="row" style="font-size:12px;color:#999">Meshtastic's own admin config, not the lamp
+    protocol - takes ~15s to apply and the lamp reboots and drops this connection when it does.</div>
+  <div class="row">
+    <label style="width:70px">SSID</label>
+    <input id="wifiSsid" type="text" placeholder="network name" disabled
+           style="flex:1;background:#1c1c26;border:1px solid #3a3a4a;border-radius:8px;color:#eee;padding:8px 10px;font-size:14px">
+  </div>
+  <div class="row">
+    <label style="width:70px">Password</label>
+    <input id="wifiPsk" type="password" placeholder="password" disabled
+           style="flex:1;background:#1c1c26;border:1px solid #3a3a4a;border-radius:8px;color:#eee;padding:8px 10px;font-size:14px">
+  </div>
+  <div class="row">
+    <button id="wifiSaveBtn" class="wide" disabled>Save &amp; enable Wi-Fi</button>
+    <button id="wifiDisableBtn" disabled>Disable</button>
+  </div>
+</div>
+
 <div class="log" id="log"></div>
 
 <script>
@@ -104,7 +140,7 @@ const FROMRADIO_UUID    = "2c55e69e-4993-11ed-b878-0242ac120002";
 const FROMNUM_UUID      = "ed9da18c-a800-4f66-a670-aa7547e34453";
 
 // ---- Lamp wire format (see LampModule.cpp / firmware/lamp/link.h) --------
-const LAMP_MAGIC = 0xC1, LAMP_SCENE = 1, LAMP_POWER = 2, LAMP_STATE = 3, LAMP_COLOUR = 4;
+const LAMP_MAGIC = 0xC1, LAMP_SCENE = 1, LAMP_POWER = 2, LAMP_STATE = 3, LAMP_COLOUR = 4, LAMP_THRESHOLD = 5;
 const LAMP_LEN = 19;
 const PRIVATE_APP_PORTNUM = 256;
 const PRIORITY_HIGH = 100;
@@ -114,8 +150,19 @@ const BROADCAST_ADDR = 0xFFFFFFFF;
 // never mistaken by LampModule for the device's own echo.
 const BROWSER_NODE_ID = 0xFFFFFFFE;
 
+// ---- Meshtastic's own admin protocol (device config, incl. Wi-Fi) --------
+// Separate from the lamp protocol above: this is the same AdminMessage the
+// phone app and CLI use to change device settings. Field numbers from
+// admin.proto / config.proto / mesh.proto in the firmware source.
+const ADMIN_APP_PORTNUM = 6;
+const CONFIGTYPE_NETWORK = 3;
+const PRIORITY_RELIABLE = 70;
+
 let device, server, toRadioChar, fromRadioChar, fromNumChar;
 let lampCounter = Math.floor(Date.now() / 1000); // see README: why unix time
+let ownNodeNum = null;
+let nodeInfoWaiters = [];   // resolved once my_info arrives
+let adminWaiters = [];      // [{resolve, reject, timer}], FIFO - matched to the next admin response
 
 function log(msg, cls) {
   const el = document.getElementById("log");
@@ -150,6 +197,17 @@ function fieldFixed32(fieldNum, value) {
 function fieldBytes(fieldNum, byteArray) {
   const b = []; writeVarint(b, tag(fieldNum, 2)); writeVarint(b, byteArray.length);
   return b.concat(Array.from(byteArray));
+}
+function fieldString(fieldNum, str) { return fieldBytes(fieldNum, new TextEncoder().encode(str)); }
+// Re-emit a raw {fieldNum, wireType, value} exactly as read - used to carry
+// config fields we don't understand or don't want to change through a
+// read-modify-write untouched, the same way protobuf forward-compat works.
+function reEmitField(f) {
+  if (f.wireType === 0) return fieldVarint(f.fieldNum, f.value);
+  if (f.wireType === 2) return fieldBytes(f.fieldNum, f.value);
+  if (f.wireType === 5) { const b = []; writeVarint(b, tag(f.fieldNum, 5)); return b.concat(Array.from(f.value)); }
+  if (f.wireType === 1) { const b = []; writeVarint(b, tag(f.fieldNum, 1)); return b.concat(Array.from(f.value)); }
+  return [];
 }
 
 function readVarint(bytes, i) {
@@ -191,7 +249,7 @@ function buildLampPayload(type, payload32, powered) {
   return b;
 }
 
-async function sendLampPacket(type, payload32, powered) {
+async function sendLampPacket(type, payload32, powered, to) {
   lampCounter += 1; // strictly increasing beats any real counter (see README)
   const lampBytes = buildLampPayload(type, payload32, powered !== false);
 
@@ -200,7 +258,7 @@ async function sendLampPacket(type, payload32, powered) {
   data = data.concat(fieldBytes(2, lampBytes));
 
   let packet = [];
-  packet = packet.concat(fieldFixed32(2, BROADCAST_ADDR)); // to
+  packet = packet.concat(fieldFixed32(2, to === undefined ? BROADCAST_ADDR : to)); // to
   packet = packet.concat(fieldBytes(4, data));              // decoded
   packet = packet.concat(fieldVarint(11, PRIORITY_HIGH));   // priority
 
@@ -210,6 +268,62 @@ async function sendLampPacket(type, payload32, powered) {
   const bytes = Uint8Array.from(toRadio);
   await toRadioChar.writeValueWithResponse(bytes);
   log(`sent type=${type} counter=${lampCounter}`, "ok");
+}
+
+// ---- Meshtastic's own MeshPacket, used for admin (Wi-Fi, reboot) ---------
+// Same framing as sendLampPacket but with an arbitrary portnum/payload and
+// always unicast to a specific node - admin traffic should never broadcast.
+async function sendAdminPacket(payloadBytes, toNode) {
+  let data = [];
+  data = data.concat(fieldVarint(1, ADMIN_APP_PORTNUM));
+  data = data.concat(fieldBytes(2, payloadBytes));
+
+  let packet = [];
+  packet = packet.concat(fieldFixed32(2, toNode));
+  packet = packet.concat(fieldBytes(4, data));
+  packet = packet.concat(fieldVarint(11, PRIORITY_RELIABLE));
+
+  let toRadio = [];
+  toRadio = toRadio.concat(fieldBytes(1, packet));
+  await toRadioChar.writeValueWithResponse(Uint8Array.from(toRadio));
+}
+
+// ---- Own node number, needed to address admin/threshold packets ----------
+// Comes from FromRadio.my_info (field 3), which only starts flowing once we
+// ask for it - Meshtastic doesn't push it unprompted over a fresh BLE link.
+function sendWantConfig() {
+  const nonce = Math.floor(Math.random() * 0xfffffffe) + 1;
+  const toRadio = fieldVarint(3, nonce); // ToRadio.want_config_id
+  return toRadioChar.writeValueWithResponse(Uint8Array.from(toRadio));
+}
+
+function ensureOwnNodeNum() {
+  if (ownNodeNum !== null) return Promise.resolve(ownNodeNum);
+  return new Promise((resolve, reject) => {
+    nodeInfoWaiters.push({ resolve, reject });
+    sendWantConfig().catch(reject);
+    setTimeout(() => {
+      const i = nodeInfoWaiters.findIndex(w => w.resolve === resolve);
+      if (i >= 0) { nodeInfoWaiters.splice(i, 1); reject(new Error("timed out waiting for node info")); }
+    }, 8000);
+  });
+}
+
+// ---- Admin get/set config round trip --------------------------------------
+// Meshtastic requires a fresh session_passkey (from a get_config_response) on
+// every set_config, to stop a passive listener from replaying old admin
+// writes - so every change here does a real request/response first.
+function requestAdminConfig(configType, toNode) {
+  return new Promise((resolve, reject) => {
+    adminWaiters.push({ resolve, reject });
+    let admin = [];
+    admin = admin.concat(fieldVarint(5, configType)); // AdminMessage.get_config_request
+    sendAdminPacket(Uint8Array.from(admin), toNode).catch(reject);
+    setTimeout(() => {
+      const i = adminWaiters.findIndex(w => w.resolve === resolve);
+      if (i >= 0) { adminWaiters.splice(i, 1); reject(new Error("admin request timed out")); }
+    }, 8000);
+  });
 }
 
 // ---- Reading state back -----------------------------------------------
@@ -230,10 +344,31 @@ function applyIncomingLamp(bytes) {
   setStatus(`type=${["", "scene", "power", "state", "colour"][type] || type} counter=${counter} power=${powered ? "on" : "off"} from=0x${node.toString(16)}`, true);
 }
 
-function parseFromRadioPacket(bytes) {
-  // FromRadio { ... MeshPacket packet = 2; ... } - we only care about field 2.
+function handleAdminPayload(bytes) {
+  // AdminMessage { ... get_config_response = 6; session_passkey = 101; ... }
+  let passkey = null, configBytes = null;
   for (const f of iterFields(bytes)) {
-    if (f.fieldNum === 2 && f.wireType === 2) {
+    if (f.fieldNum === 101 && f.wireType === 2) passkey = f.value;
+    if (f.fieldNum === 6 && f.wireType === 2) configBytes = f.value;
+  }
+  if (!configBytes) return; // not a get_config_response - nothing we act on yet
+  const waiter = adminWaiters.shift();
+  if (waiter) waiter.resolve({ passkey, configBytes });
+}
+
+function parseFromRadioPacket(bytes) {
+  for (const f of iterFields(bytes)) {
+    if (f.fieldNum === 3 && f.wireType === 2) {
+      // FromRadio.my_info -> MyNodeInfo.my_node_num (field 1)
+      for (const nf of iterFields(f.value)) {
+        if (nf.fieldNum === 1 && nf.wireType === 0) {
+          ownNodeNum = nf.value;
+          document.getElementById("deviceInfo").textContent = `node 0x${ownNodeNum.toString(16)}`;
+          nodeInfoWaiters.splice(0).forEach(w => w.resolve(ownNodeNum));
+        }
+      }
+    } else if (f.fieldNum === 2 && f.wireType === 2) {
+      // FromRadio.packet -> MeshPacket
       for (const pf of iterFields(f.value)) {
         if (pf.fieldNum === 4 && pf.wireType === 2) { // decoded Data
           let portnum = null, payload = null;
@@ -242,6 +377,7 @@ function parseFromRadioPacket(bytes) {
             if (df.fieldNum === 2 && df.wireType === 2) payload = df.value;
           }
           if (portnum === PRIVATE_APP_PORTNUM && payload) applyIncomingLamp(payload);
+          if (portnum === ADMIN_APP_PORTNUM && payload) handleAdminPayload(payload);
         }
       }
     }
@@ -264,8 +400,61 @@ function setStatus(text, connected) {
   document.getElementById("dot").className = "dot " + (connected ? "on" : "off");
 }
 function setControlsEnabled(enabled) {
-  for (const id of ["tapBtn", "powerBtn", "colourPicker", "warmth", "sendColourBtn"])
+  for (const id of ["tapBtn", "powerBtn", "colourPicker", "warmth", "sendColourBtn",
+                     "rebootBtn", "thresholdSlider", "thresholdSetBtn",
+                     "wifiSsid", "wifiPsk", "wifiSaveBtn", "wifiDisableBtn"])
     document.getElementById(id).disabled = !enabled;
+}
+
+// ---- Wi-Fi (Meshtastic admin NetworkConfig) --------------------------
+// Read-modify-write: fetch the device's current NetworkConfig (and a fresh
+// session_passkey with it), change only the wifi_* fields, re-emit every
+// other field byte-for-byte so we never clobber ntp_server/eth/etc. we don't
+// have a UI for.
+async function setWifi(ssid, psk, enabled) {
+  const node = await ensureOwnNodeNum();
+  log("requesting current network config...");
+  const { passkey, configBytes } = await requestAdminConfig(CONFIGTYPE_NETWORK, node);
+  if (!passkey) throw new Error("no session_passkey in response - device out of date?");
+
+  // Config.network = field 4 of the returned Config message.
+  let networkBytes = null;
+  for (const f of iterFields(configBytes)) if (f.fieldNum === 4 && f.wireType === 2) networkBytes = f.value;
+  const oldFields = networkBytes ? Array.from(iterFields(networkBytes)) : [];
+
+  let network = [];
+  network = network.concat(fieldVarint(1, enabled ? 1 : 0));      // wifi_enabled
+  if (enabled) {
+    network = network.concat(fieldString(3, ssid));                // wifi_ssid
+    network = network.concat(fieldString(4, psk));                 // wifi_psk
+  }
+  for (const f of oldFields) if (![1, 3, 4].includes(f.fieldNum)) network = network.concat(reEmitField(f));
+
+  const configOut = fieldBytes(4, network); // Config.network
+  let admin = [];
+  admin = admin.concat(fieldBytes(101, passkey));   // session_passkey, echoed back
+  admin = admin.concat(fieldBytes(34, configOut));  // set_config
+  await sendAdminPacket(Uint8Array.from(admin), node);
+  log(enabled ? `Wi-Fi set: ${ssid} - lamp will reboot to apply (~15s)` : "Wi-Fi disabled - lamp will reboot", "ok");
+}
+
+// ---- Reboot -----------------------------------------------------------
+async function rebootDevice() {
+  const node = await ensureOwnNodeNum();
+  const admin = fieldVarint(97, 2); // AdminMessage.reboot_seconds = 2
+  await sendAdminPacket(Uint8Array.from(admin), node);
+  log("reboot requested", "ok");
+}
+
+// ---- Touch threshold (lamp protocol, unicast, persisted on-device) -------
+async function setTouchThreshold(value) {
+  const node = await ensureOwnNodeNum();
+  const bits = new Uint8Array(4);
+  new DataView(bits.buffer).setFloat32(0, value, true);
+  const payload32 = new DataView(bits.buffer).getUint32(0, true);
+  await sendLampPacket(LAMP_THRESHOLD, payload32, true, node);
+  try { localStorage.setItem("lamp.threshold." + node.toString(16), String(value)); } catch (e) {}
+  log(`threshold set to ${value.toFixed(2)} on node 0x${node.toString(16)}`, "ok");
 }
 
 async function connect() {
@@ -298,6 +487,20 @@ async function connect() {
     // SMP pairing handshake that the encrypted characteristics require -
     // this is normal, not a bug. Give it a moment, then it settles.
     await drainFromRadio().catch(() => {});
+
+    // Learn our own node number in the background so Device/Wi-Fi controls
+    // have what they need before the user reaches for them, and restore this
+    // device's last-set threshold into the slider (UI convenience only - the
+    // lamp's own NVS copy is the real source of truth, not localStorage).
+    ensureOwnNodeNum().then(node => {
+      try {
+        const saved = localStorage.getItem("lamp.threshold." + node.toString(16));
+        if (saved !== null) {
+          document.getElementById("thresholdSlider").value = saved;
+          document.getElementById("thresholdValue").textContent = parseFloat(saved).toFixed(2);
+        }
+      } catch (e) {}
+    }).catch(e => log("node info: " + e.message, "err"));
   } catch (e) {
     log("connect failed: " + e.message, "err");
   }
@@ -342,6 +545,28 @@ document.getElementById("sendColourBtn").addEventListener("click", () => {
   const w = parseInt(document.getElementById("warmth").value, 10);
   const payload = (r | (g << 8) | (b << 16) | (w << 24)) >>> 0;
   withRetry(() => sendLampPacket(LAMP_COLOUR, payload, true), "colour");
+});
+
+document.getElementById("thresholdSlider").addEventListener("input", e => {
+  document.getElementById("thresholdValue").textContent = parseFloat(e.target.value).toFixed(2);
+});
+document.getElementById("thresholdSetBtn").addEventListener("click", () => {
+  const v = parseFloat(document.getElementById("thresholdSlider").value);
+  withRetry(() => setTouchThreshold(v), "threshold");
+});
+
+document.getElementById("rebootBtn").addEventListener("click", () => {
+  withRetry(() => rebootDevice(), "reboot");
+});
+
+document.getElementById("wifiSaveBtn").addEventListener("click", () => {
+  const ssid = document.getElementById("wifiSsid").value.trim();
+  const psk = document.getElementById("wifiPsk").value;
+  if (!ssid) { log("enter an SSID first", "err"); return; }
+  withRetry(() => setWifi(ssid, psk, true), "wifi save");
+});
+document.getElementById("wifiDisableBtn").addEventListener("click", () => {
+  withRetry(() => setWifi("", "", false), "wifi disable");
 });
 
 if (!navigator.bluetooth) {
