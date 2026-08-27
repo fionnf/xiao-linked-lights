@@ -33,6 +33,13 @@
   }
   input[type=range] { flex: 1; }
   label { font-size: 12px; color: #999; width: 60px; flex-shrink: 0; }
+  .chVal { width: 30px; text-align: right; font-size: 12px; color: #aaa; font-family: ui-monospace, monospace; }
+  .swatch {
+    width: 26px; height: 26px; border-radius: 7px; border: 1px solid #3a3a4a; cursor: pointer; padding: 0;
+  }
+  .swatch:hover { transform: scale(1.12); }
+  .swatch:disabled { cursor: default; opacity: 0.4; }
+  .swatch:disabled:hover { transform: none; }
   .strip {
     height: 28px; border-radius: 8px; margin-top: 14px;
     background: #222; transition: background 0.4s;
@@ -86,12 +93,35 @@ port, exactly as a tap on the lamp itself would.</div>
     <button id="tapBtn" class="wide" disabled>Tap (random scene)</button>
     <button id="powerBtn" class="wide" disabled>Power</button>
   </div>
-  <div class="row">
-    <label>Colour</label>
-    <input type="color" id="colourPicker" value="#ff9900" disabled>
-    <label style="width:auto">Warmth</label>
-    <input type="range" id="warmth" min="0" max="255" value="120" disabled>
-    <button id="sendColourBtn" disabled>Send</button>
+
+  <div class="row" style="margin-top:16px;align-items:stretch">
+    <div id="colourPreview" style="width:52px;height:52px;border-radius:12px;background:#ff9900;
+         border:1px solid #3a3a4a;flex-shrink:0"></div>
+    <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+      <div class="row" style="margin:0">
+        <input type="color" id="colourPicker" value="#ff9900" disabled style="width:36px;height:36px">
+        <input type="text" id="hexInput" value="#FF9900" disabled maxlength="7" placeholder="#RRGGBB"
+               style="width:80px;background:#1c1c26;border:1px solid #3a3a4a;border-radius:8px;color:#eee;
+               padding:6px 8px;font-size:13px;font-family:ui-monospace,monospace;text-transform:uppercase">
+        <button id="sendColourBtn" class="wide" disabled>Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:10px"><label>R</label><input type="range" id="rSlider" min="0" max="255" value="255" disabled><span class="chVal" id="rVal">255</span></div>
+  <div class="row"><label>G</label><input type="range" id="gSlider" min="0" max="255" value="153" disabled><span class="chVal" id="gVal">153</span></div>
+  <div class="row"><label>B</label><input type="range" id="bSlider" min="0" max="255" value="0" disabled><span class="chVal" id="bVal">0</span></div>
+  <div class="row"><label>Warmth (W)</label><input type="range" id="warmth" min="0" max="255" value="120" disabled><span class="chVal" id="warmthVal">120</span></div>
+
+  <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:6px" id="paletteRow"></div>
+</div>
+
+<div class="card">
+  <div class="row"><strong style="font-size:13px">Mesh</strong></div>
+  <div class="row" style="font-size:12px;color:#999">Nodes this lamp has heard, from Meshtastic's own
+    node database - not just the other lamp.</div>
+  <div id="meshList" class="row" style="flex-direction:column;align-items:stretch;gap:6px;font-size:13px">
+    <span style="color:#666">connect to see mesh nodes</span>
   </div>
 </div>
 
@@ -167,6 +197,16 @@ const FROMNUM_UUID      = "ed9da18c-a800-4f66-a670-aa7547e34453";
 // ---- Lamp wire format (see LampModule.cpp / firmware/lamp/link.h) --------
 const LAMP_MAGIC = 0xC1, LAMP_SCENE = 1, LAMP_POWER = 2, LAMP_STATE = 3, LAMP_COLOUR = 4,
       LAMP_THRESHOLD = 5, LAMP_ALARM = 6;
+
+// Copied from LampConfig.h's TINT_PALETTE - the same 30 tints the scene
+// generator draws from, offered here as one-tap quick picks (sent at full
+// warmth-off saturation; the Warmth slider still layers on top via Send).
+const TINT_PALETTE = [
+  [255,200,80],[255,160,0],[255,120,0],[255,60,0],[255,0,0],[255,0,60],[255,0,140],[200,0,200],
+  [140,0,255],[80,0,255],[0,0,255],[0,60,255],[0,140,255],[0,200,255],[0,255,220],[0,255,160],
+  [0,255,80],[0,220,0],[80,255,0],[160,255,0],[220,255,0],[255,240,0],[255,180,40],[255,100,80],
+  [255,80,160],[180,40,255],[40,100,255],[0,180,180],[20,255,120],[255,220,120],
+];
 const LAMP_LEN = 19;
 const PRIVATE_APP_PORTNUM = 256;
 const PRIORITY_HIGH = 100;
@@ -370,6 +410,48 @@ function applyIncomingLamp(bytes) {
   setStatus(`type=${["", "scene", "power", "state", "colour"][type] || type} counter=${counter} power=${powered ? "on" : "off"} from=0x${node.toString(16)}`, true);
 }
 
+// ---- Mesh node list (FromRadio.node_info) ---------------------------------
+const meshNodes = new Map();  // num -> {longName, shortName, snr, hopsAway, lastHeard}
+
+function handleNodeInfo(bytes) {
+  const n = {};
+  for (const f of iterFields(bytes)) {
+    if (f.fieldNum === 1 && f.wireType === 0) n.num = f.value;                 // NodeInfo.num
+    else if (f.fieldNum === 2 && f.wireType === 2) {                           // NodeInfo.user
+      for (const uf of iterFields(f.value)) {
+        if (uf.fieldNum === 2 && uf.wireType === 2) n.longName = new TextDecoder().decode(uf.value);
+        if (uf.fieldNum === 3 && uf.wireType === 2) n.shortName = new TextDecoder().decode(uf.value);
+      }
+    } else if (f.fieldNum === 4 && f.wireType === 5) {                         // NodeInfo.snr (float)
+      n.snr = new DataView(f.value.buffer, f.value.byteOffset, 4).getFloat32(0, true);
+    } else if (f.fieldNum === 5 && f.wireType === 5) {                         // NodeInfo.last_heard (fixed32)
+      n.lastHeard = new DataView(f.value.buffer, f.value.byteOffset, 4).getUint32(0, true);
+    } else if (f.fieldNum === 9 && f.wireType === 0) n.hopsAway = f.value;      // optional uint32
+  }
+  if (n.num === undefined) return;
+  meshNodes.set(n.num, { ...meshNodes.get(n.num), ...n });
+  renderMeshList();
+}
+
+function renderMeshList() {
+  const el = document.getElementById("meshList");
+  if (meshNodes.size === 0) { el.innerHTML = '<span style="color:#666">no nodes heard yet</span>'; return; }
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const rows = Array.from(meshNodes.entries()).sort((a, b) => a[0] - b[0]).map(([num, n]) => {
+    const name = n.longName || n.shortName || `0x${num.toString(16)}`;
+    const mine = num === ownNodeNum;
+    const hops = n.hopsAway !== undefined ? `${n.hopsAway} hop${n.hopsAway === 1 ? "" : "s"}` : "direct?";
+    const snr = n.snr !== undefined ? `${n.snr.toFixed(1)} dB SNR` : "";
+    const age = n.lastHeard ? `${Math.max(0, Math.round((nowSecs - n.lastHeard) / 60))}m ago` : "";
+    return `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;
+                 border-bottom:1px solid #232330">
+              <span>${mine ? "● " : ""}${name}${mine ? " (this lamp)" : ""}</span>
+              <span style="color:#888;font-size:11.5px">${[hops, snr, age].filter(Boolean).join(" · ")}</span>
+            </div>`;
+  });
+  el.innerHTML = rows.join("");
+}
+
 function handleAdminPayload(bytes) {
   // AdminMessage { ... get_config_response = 6; session_passkey = 101; ... }
   let passkey = null, configBytes = null;
@@ -391,8 +473,12 @@ function parseFromRadioPacket(bytes) {
           ownNodeNum = nf.value;
           document.getElementById("deviceInfo").textContent = `node 0x${ownNodeNum.toString(16)}`;
           nodeInfoWaiters.splice(0).forEach(w => w.resolve(ownNodeNum));
+          renderMeshList(); // "(this lamp)" marker depends on ownNodeNum
         }
       }
+    } else if (f.fieldNum === 4 && f.wireType === 2) {
+      // FromRadio.node_info -> NodeInfo, one per node in the on-radio DB
+      handleNodeInfo(f.value);
     } else if (f.fieldNum === 2 && f.wireType === 2) {
       // FromRadio.packet -> MeshPacket
       for (const pf of iterFields(f.value)) {
@@ -426,11 +512,13 @@ function setStatus(text, connected) {
   document.getElementById("dot").className = "dot " + (connected ? "on" : "off");
 }
 function setControlsEnabled(enabled) {
-  for (const id of ["tapBtn", "powerBtn", "colourPicker", "warmth", "sendColourBtn",
+  for (const id of ["tapBtn", "powerBtn", "colourPicker", "hexInput", "rSlider", "gSlider", "bSlider",
+                     "warmth", "sendColourBtn",
                      "rebootBtn", "thresholdSlider", "thresholdSetBtn",
                      "wifiSsid", "wifiPsk", "wifiSaveBtn", "wifiDisableBtn",
                      "alarmTime", "alarmDuration", "alarmSetBtn", "alarmOffBtn"])
     document.getElementById(id).disabled = !enabled;
+  document.querySelectorAll(".swatch").forEach(el => el.disabled = !enabled);
 }
 
 // ---- Wi-Fi (Meshtastic admin NetworkConfig) --------------------------
@@ -610,9 +698,71 @@ document.getElementById("powerBtn").addEventListener("click", () => {
 });
 let powerState = true;
 
+// ---- Colour controls: R/G/B sliders, hex input, and the native picker all
+// stay in sync (whichever one changes updates the rest + the preview swatch);
+// Warmth (W) is independent since it's a 4th channel with no hex equivalent.
+function currentRGB() {
+  return [
+    parseInt(document.getElementById("rSlider").value, 10),
+    parseInt(document.getElementById("gSlider").value, 10),
+    parseInt(document.getElementById("bSlider").value, 10),
+  ];
+}
+function toHex([r, g, b]) { return "#" + [r, g, b].map(v => v.toString(16).padStart(2, "0")).join(""); }
+function updatePreview() {
+  const [r, g, b] = currentRGB();
+  const w = parseInt(document.getElementById("warmth").value, 10);
+  // Blend W in for the preview the same way applyIncomingLamp() previews an
+  // incoming RGBW value, so what you see here roughly matches the strip.
+  document.getElementById("colourPreview").style.background =
+    `rgb(${Math.min(255, r + w * 0.6)}, ${Math.min(255, g + w * 0.4)}, ${Math.min(255, b + w * 0.2)})`;
+}
+function setRGB(r, g, b, { fromHex = false, fromPicker = false } = {}) {
+  document.getElementById("rSlider").value = r; document.getElementById("rVal").textContent = r;
+  document.getElementById("gSlider").value = g; document.getElementById("gVal").textContent = g;
+  document.getElementById("bSlider").value = b; document.getElementById("bVal").textContent = b;
+  if (!fromHex) document.getElementById("hexInput").value = toHex([r, g, b]).toUpperCase();
+  if (!fromPicker) document.getElementById("colourPicker").value = toHex([r, g, b]);
+  updatePreview();
+}
+["rSlider", "gSlider", "bSlider"].forEach(id => {
+  document.getElementById(id).addEventListener("input", () => {
+    document.getElementById(id[0] + "Val").textContent = document.getElementById(id).value;
+    const [r, g, b] = currentRGB();
+    document.getElementById("hexInput").value = toHex([r, g, b]).toUpperCase();
+    document.getElementById("colourPicker").value = toHex([r, g, b]);
+    updatePreview();
+  });
+});
+document.getElementById("warmth").addEventListener("input", e => {
+  document.getElementById("warmthVal").textContent = e.target.value;
+  updatePreview();
+});
+document.getElementById("colourPicker").addEventListener("input", e => {
+  const hex = e.target.value;
+  setRGB(parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), { fromPicker: true });
+});
+document.getElementById("hexInput").addEventListener("change", e => {
+  const hex = e.target.value.trim();
+  if (!/^#?[0-9a-fA-F]{6}$/.test(hex)) { log("bad hex - use #RRGGBB", "err"); return; }
+  const h = hex.startsWith("#") ? hex : "#" + hex;
+  setRGB(parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), { fromHex: true });
+});
+
+// Palette quick-picks, built from the firmware's own TINT_PALETTE.
+const paletteRow = document.getElementById("paletteRow");
+TINT_PALETTE.forEach(([r, g, b]) => {
+  const btn = document.createElement("button");
+  btn.className = "swatch";
+  btn.disabled = true;
+  btn.style.background = `rgb(${r},${g},${b})`;
+  btn.title = `#${[r,g,b].map(v=>v.toString(16).padStart(2,"0")).join("")}`;
+  btn.addEventListener("click", () => setRGB(r, g, b));
+  paletteRow.appendChild(btn);
+});
+
 document.getElementById("sendColourBtn").addEventListener("click", () => {
-  const hex = document.getElementById("colourPicker").value; // "#rrggbb"
-  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  const [r, g, b] = currentRGB();
   const w = parseInt(document.getElementById("warmth").value, 10);
   const payload = (r | (g << 8) | (b << 16) | (w << 24)) >>> 0;
   withRetry(() => sendLampPacket(LAMP_COLOUR, payload, true), "colour");
