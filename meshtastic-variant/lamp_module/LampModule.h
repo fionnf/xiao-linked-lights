@@ -41,6 +41,19 @@ class LampModule : public SinglePortModule, private concurrency::OSThread
     void startupChain();
     void render();
 
+    // NOTE: do not add anything here that calls Serial.read()/available().
+    // Meshtastic's own framed USB-serial API (what `meshtastic --info` and
+    // the desktop/phone-over-USB clients use) shares this same UART, and it
+    // has exactly one reader. A module stealing bytes off it - even ones it
+    // doesn't understand and drops - starves that reader and breaks the CLI/
+    // phone connection. An earlier version of this module did exactly that
+    // to offer a typed serial console; it broke `meshtastic --info` on both
+    // boards and was reverted. Writing to Serial (LOG_INFO, Serial.printf)
+    // is fine and does not conflict - only reading does. If a console is
+    // ever needed again inside Meshtastic, it has to go through Meshtastic's
+    // own serial API/module, not a second consumer of the same bytes.
+    void debugTouch();
+
     Adafruit_NeoPixel strip_;
     ColourEngine engine_;
     TouchSensor touch_;
@@ -50,6 +63,8 @@ class LampModule : public SinglePortModule, private concurrency::OSThread
     uint32_t lastState_ = 0;
     uint32_t lastFrame_ = 0;
     bool booted_ = false;
+    bool touchWasTouched_ = false;
+    uint32_t lastTouchLog_ = 0;
 };
 
 extern LampModule *lampModule;

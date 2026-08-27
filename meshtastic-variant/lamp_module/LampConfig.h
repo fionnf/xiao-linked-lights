@@ -19,7 +19,7 @@ static const bool REVERSE_LEDS = false;     // true if this lamp joins at the DO
 // ---- Capacitive touch ------------------------------------------------------
 // TTP223 module: it does its own capacitance sensing on-board and just hands
 // us a clean digital level on OUT, so no charge-time measurement or discharge
-// resistor is needed here - see touch.h. VCC/GND to 3V3/GND, OUT to PIN_TOUCH.
+// resistor is needed here - see LampTouch.h. VCC/GND to 3V3/GND, OUT to PIN_TOUCH.
 static const int PIN_TOUCH = 44;      // D7, TTP223 OUT
 static const bool TOUCH_ACTIVE_HIGH = true;  // flip if your board's jumper is set to active-low
 static const uint32_t HOLD_TIME_MS = 3000;  // longer than this is a hold, not a tap
@@ -29,7 +29,7 @@ static const uint32_t HOLD_TIME_MS = 3000;  // longer than this is a hold, not a
 // / oversensitive line still produces a real number between 0 and 1 - mostly-0
 // at rest, rising toward 1 the longer and more often it reads touched - and
 // TOUCH_THRESHOLD becomes a genuine, tunable line in that number, the same
-// role TOUCH_THRESHOLD played for the old sensor. See touch.h.
+// role TOUCH_THRESHOLD played for the old sensor. See LampTouch.h.
 static const float TOUCH_SMOOTHING = 0.15f;   // EMA alpha: higher = faster to react, less smoothing
 static const float TOUCH_THRESHOLD = 0.55f;   // smoothed level above this counts as touched
 // Minimum gap between two accepted taps. Independent of the threshold above:
@@ -81,7 +81,8 @@ static const float BREATHE_DEPTH = 0.10f;
 // than alive. Re-enable at runtime with `drift 65` if you want it back.
 static const uint32_t IDLE_DRIFT_INTERVAL_S = 0;
 
-// ---- Radio -----------------------------------------------------------------
+#if 0  // the radio pins come from the Meshtastic variant, not from here
+// ---- Radio ---
 // Measured pin map for the header-wired Wio-SX1262. See CLAUDE.md section 9;
 // RST on GPIO3 is the discovery that made the radio work at all.
 static const int PIN_LORA_SCK = 7, PIN_LORA_MISO = 8, PIN_LORA_MOSI = 9;
@@ -95,3 +96,4 @@ static const int LORA_CR = 5;
 static const int LORA_TX_DBM = 14;     // EU 868 ERP limit
 static const int LORA_PREAMBLE = 8;
 static const float LORA_TCXO_V = 1.8f;
+#endif

@@ -2,337 +2,353 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<title>Linked Lamps - Bluetooth</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Linked Lamps</title>
 <style>
-  :root {
-    --bg:#0d0f14; --panel:#161a22; --edge:#242b38; --ink:#e8ecf4;
-    --dim:#8b95a8; --accent:#ffb347; --ok:#4ade80; --bad:#f87171;
-  }
-  * { box-sizing:border-box; }
+  :root { color-scheme: dark; }
   body {
-    margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,
-    BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; padding:24px;
+    margin: 0; min-height: 100vh; background: #0b0b10; color: #eee;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 32px 16px 64px;
   }
-  h1 { font-size:20px; margin:0 0 4px; font-weight:600; letter-spacing:-.01em; }
-  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
-  .lamps { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
-  .lamp {
-    background:var(--panel); border:1px solid var(--edge); border-radius:12px; padding:16px;
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: #999; font-size: 13px; margin-bottom: 24px; text-align: center; max-width: 480px; }
+  .card {
+    width: 100%; max-width: 420px; background: #16161d; border: 1px solid #2a2a34;
+    border-radius: 14px; padding: 20px; margin-bottom: 16px;
   }
-  .head { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
-  .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); flex:none; }
-  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
-  .name { font-weight:600; }
-  .node { color:var(--dim); font-size:12px; font-family:ui-monospace,monospace; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row + .row { margin-top: 12px; }
   button {
-    background:#212836; color:var(--ink); border:1px solid var(--edge); border-radius:8px;
-    padding:8px 12px; font-size:14px; cursor:pointer; font-family:inherit;
+    background: #2a2a38; color: #eee; border: 1px solid #3a3a4a; border-radius: 9px;
+    padding: 10px 16px; font-size: 14px; cursor: pointer; font-weight: 500;
   }
-  button:hover:not(:disabled) { background:#2a3242; border-color:#3a4456; }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  button.primary { background:var(--accent); color:#1a1205; border-color:var(--accent); font-weight:600; }
-  button.primary:hover:not(:disabled) { background:#ffc266; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
-  .ctl { margin-bottom:10px; }
-  .ctl label { display:flex; justify-content:space-between; font-size:12px; color:var(--dim); margin-bottom:4px; }
-  .ctl label b { color:var(--ink); font-family:ui-monospace,monospace; font-weight:500; }
-  input[type=range] { width:100%; accent-color:var(--accent); }
-  .strip { display:flex; gap:1px; height:26px; margin:12px 0; border-radius:5px; overflow:hidden; }
-  .strip i { flex:1; background:#000; transition:background .25s; }
+  button:hover:not(:disabled) { background: #34344a; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: #4a5fe8; border-color: #4a5fe8; }
+  button.primary:hover:not(:disabled) { background: #5a6ff8; }
+  button.wide { flex: 1; }
   input[type=color] {
-    width:100%; height:38px; padding:2px; background:#212836;
-    border:1px solid var(--edge); border-radius:8px; cursor:pointer;
+    width: 48px; height: 40px; border: none; border-radius: 8px; background: none; padding: 0; cursor: pointer;
   }
-  .swatches { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0 12px; }
-  .swatches i {
-    width:26px; height:26px; border-radius:6px; cursor:pointer;
-    border:1px solid rgba(255,255,255,.12);
+  input[type=range] { flex: 1; }
+  label { font-size: 12px; color: #999; width: 60px; flex-shrink: 0; }
+  .strip {
+    height: 28px; border-radius: 8px; margin-top: 14px;
+    background: #222; transition: background 0.4s;
   }
-  .swatches i:hover { transform:scale(1.12); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.off { background: #555; }
+  .dot.on { background: #4ee08a; box-shadow: 0 0 6px #4ee08a; }
+  .status { font-size: 13px; color: #aaa; }
   .log {
-    background:#0a0c10; border:1px solid var(--edge); border-radius:8px; padding:10px;
-    font:12px/1.5 ui-monospace,monospace; height:150px; overflow:auto;
-    white-space:pre-wrap; color:#9fb0c8;
+    width: 100%; max-width: 420px; height: 140px; overflow-y: auto;
+    background: #0e0e13; border: 1px solid #2a2a34; border-radius: 10px;
+    padding: 10px 12px; font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: #8a8a9a;
   }
-  .log .rx { color:var(--ok); }
-  .log .tx { color:var(--accent); }
-  .note {
-    margin-top:18px; padding:12px 14px; background:#161a22; border:1px solid var(--edge);
-    border-left:3px solid var(--accent); border-radius:6px; font-size:13px; color:var(--dim);
+  .log div.err { color: #f28a8a; }
+  .log div.ok { color: #7ad0a0; }
+  .warn {
+    max-width: 420px; font-size: 12.5px; color: #d9b45c; background: #2a2410;
+    border: 1px solid #4a3f1a; border-radius: 10px; padding: 10px 14px; margin-bottom: 16px;
   }
-  .note b { color:var(--ink); }
-  .unsupported { background:#2a1616; border-left-color:var(--bad); }
 </style>
 </head>
 <body>
 
 <h1>Linked Lamps</h1>
-<div class="sub">Two lamps, one colour. Tap either and both change &mdash; 868&nbsp;MHz LoRa, ~211&nbsp;ms.</div>
+<div class="sub">Direct Bluetooth control over Meshtastic's own GATT link - no phone app,
+no need to leave the Meshtastic firmware. Injects a lamp packet on the private app
+port, exactly as a tap on the lamp itself would.</div>
 
-<div class="lamps" id="lamps"></div>
-
-<div class="note" id="note">
-  <b>Before connecting:</b> close any serial monitor holding the port, or the browser
-  cannot open it. Each lamp is a separate connection &mdash; hit Connect on both panels
-  and pick a different port each time.
+<div class="warn">
+  <strong>First connection:</strong> your OS will show a native Bluetooth pairing
+  prompt - enter <strong>123456</strong> (the lamps' fixed BLE PIN). Chrome/Edge only;
+  Safari and Firefox do not implement Web Bluetooth.
 </div>
 
+<div class="card">
+  <div class="row">
+    <button id="connectBtn" class="primary wide">Connect</button>
+  </div>
+  <div class="row status">
+    <span><span id="dot" class="dot off"></span><span id="statusText">not connected</span></span>
+  </div>
+  <div class="strip" id="stripPreview"></div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="tapBtn" class="wide" disabled>Tap (random scene)</button>
+    <button id="powerBtn" class="wide" disabled>Power</button>
+  </div>
+  <div class="row">
+    <label>Colour</label>
+    <input type="color" id="colourPicker" value="#ff9900" disabled>
+    <label style="width:auto">Warmth</label>
+    <input type="range" id="warmth" min="0" max="255" value="120" disabled>
+    <button id="sendColourBtn" disabled>Send</button>
+  </div>
+</div>
+
+<div class="log" id="log"></div>
+
 <script>
-// ---------------------------------------------------------------------------
-// Web Serial control for the lamp firmware.
-//
-// The firmware already exposes a plain line-based command interface over USB
-// (tap, power, groups N, bright F ...), which is what the serial console uses.
-// This page speaks exactly the same protocol, so nothing had to change on the
-// device - the browser is just another terminal, with buttons instead of typing.
-//
-// Chrome/Edge/Arc only: Safari and Firefox do not implement Web Serial.
-// ---------------------------------------------------------------------------
+"use strict";
 
-const NUM_LEDS = 39;
+// ---- Meshtastic BLE GATT service - fixed UUIDs, same ones the official
+// phone/web clients use. See BluetoothCommon.h in the firmware source.
+const MESH_SERVICE_UUID = "6ba1b218-15a8-461f-9fa8-5dcae273eafd";
+const TORADIO_UUID      = "f75c76d2-129e-4dad-a1dd-7866124401e7";
+const FROMRADIO_UUID    = "2c55e69e-4993-11ed-b878-0242ac120002";
+const FROMNUM_UUID      = "ed9da18c-a800-4f66-a670-aa7547e34453";
 
-class Lamp {
-  constructor(label, hint) {
-    this.label = label; this.hint = hint;
-    this.port = null; this.writer = null; this.connected = false;
-    this.buf = '';
-    this.build();
+// ---- Lamp wire format (see LampModule.cpp / firmware/lamp/link.h) --------
+const LAMP_MAGIC = 0xC1, LAMP_SCENE = 1, LAMP_POWER = 2, LAMP_STATE = 3, LAMP_COLOUR = 4;
+const LAMP_LEN = 19;
+const PRIVATE_APP_PORTNUM = 256;
+const PRIORITY_HIGH = 100;
+const BROADCAST_ADDR = 0xFFFFFFFF;
+// A sentinel "node id" for this browser: never equals a real device's node
+// number (those come from the low 32 bits of a MAC), so packets we inject are
+// never mistaken by LampModule for the device's own echo.
+const BROWSER_NODE_ID = 0xFFFFFFFE;
+
+let device, server, toRadioChar, fromRadioChar, fromNumChar;
+let lampCounter = Math.floor(Date.now() / 1000); // see README: why unix time
+
+function log(msg, cls) {
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---- Minimal protobuf wire encoding/decoding ------------------------------
+// Only what we need: varint, fixed32, length-delimited. No .proto compiler,
+// no dependency - the wire format for these specific messages is small and
+// stable enough to hand-roll, and skipping unknown fields generically means
+// we never need to understand messages we don't care about (MyNodeInfo,
+// NodeInfo, Config, ...) to find the one MeshPacket we're after.
+
+function writeVarint(bytes, value) {
+  value = value >>> 0;
+  while (value > 0x7f) { bytes.push((value & 0x7f) | 0x80); value >>>= 7; }
+  bytes.push(value);
+}
+function tag(fieldNum, wireType) { return (fieldNum << 3) | wireType; }
+function fieldVarint(fieldNum, value) {
+  const b = []; writeVarint(b, tag(fieldNum, 0)); writeVarint(b, value); return b;
+}
+function fieldFixed32(fieldNum, value) {
+  const b = []; writeVarint(b, tag(fieldNum, 5));
+  b.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+  return b;
+}
+function fieldBytes(fieldNum, byteArray) {
+  const b = []; writeVarint(b, tag(fieldNum, 2)); writeVarint(b, byteArray.length);
+  return b.concat(Array.from(byteArray));
+}
+
+function readVarint(bytes, i) {
+  let result = 0, shift = 0, b;
+  do { b = bytes[i++]; result |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
+  return [result >>> 0, i];
+}
+
+// Generic field iterator: yields {fieldNum, wireType, value} for a
+// length-delimited or fixed32/varint payload, skipping anything unrecognised.
+function* iterFields(bytes) {
+  let i = 0;
+  while (i < bytes.length) {
+    const [t, i1] = readVarint(bytes, i); i = i1;
+    const fieldNum = t >>> 3, wireType = t & 7;
+    let value;
+    if (wireType === 0) { const [v, i2] = readVarint(bytes, i); value = v; i = i2; }
+    else if (wireType === 1) { value = bytes.slice(i, i + 8); i += 8; }
+    else if (wireType === 2) { const [len, iL] = readVarint(bytes, i); i = iL; value = bytes.slice(i, i + len); i += len; }
+    else if (wireType === 5) { value = bytes.slice(i, i + 4); i += 4; }
+    else return; // unknown wire type - bail rather than mis-parse
+    yield { fieldNum, wireType, value };
   }
+}
 
-  build() {
-    const el = document.createElement('div');
-    el.className = 'lamp';
-    el.innerHTML = `
-      <div class="head">
-        <span class="dot"></span>
-        <span class="name">${this.label}</span>
-        <span class="node"></span>
-        <span style="flex:1"></span>
-        <button class="connect">Connect</button>
-      </div>
-      <div class="strip"></div>
-      <div class="row">
-        <button class="primary act" data-cmd="tap" disabled>Tap</button>
-        <button class="act" data-cmd="power" disabled>Power</button>
-        <button class="act" data-cmd="chain" disabled>Chain</button>
-        <button class="act" data-cmd="test" disabled>Test</button>
-        <button class="act" data-cmd="sync" disabled>Sync</button>
-        <button class="act" data-cmd="status" disabled>Status</button>
-      </div>
-      <div class="ctl"><label>Brightness <b class="v-bright">0.60</b></label>
-        <input type="range" class="s-bright" min="0" max="1" step="0.05" value="0.6" disabled></div>
-      <div class="picker">
-        <div class="ctl"><label>Colour <b class="v-colour">pick one</b></label>
-          <input type="color" class="s-colour" value="#ff9840" disabled></div>
-        <div class="ctl"><label>White channel <b class="v-white">120</b></label>
-          <input type="range" class="s-white" min="0" max="255" step="1" value="120" disabled></div>
-        <div class="swatches"></div>
-      </div>
-      <div class="ctl"><label>Palette position <b class="v-pos">&mdash;</b></label>
-        <input type="range" class="s-pos" min="0" max="1" step="0.01" value="0.5" disabled></div>
-      <div class="ctl"><label>Bands <b class="v-groups">random</b></label>
-        <input type="range" class="s-groups" min="0" max="4" step="1" value="0" disabled></div>
-      <div class="ctl"><label>Fade frames <b class="v-fade">60</b></label>
-        <input type="range" class="s-fade" min="1" max="200" step="1" value="60" disabled></div>
-      <div class="ctl"><label>Breathe <b class="v-breathe">0.10</b></label>
-        <input type="range" class="s-breathe" min="0" max="0.5" step="0.01" value="0.1" disabled></div>
-      <div class="ctl"><label>Auto-drift seconds <b class="v-drift">off</b></label>
-        <input type="range" class="s-drift" min="0" max="300" step="5" value="0" disabled></div>
-      <div class="log"></div>`;
-    document.getElementById('lamps').appendChild(el);
-    this.el = el;
-    this.logEl = el.querySelector('.log');
-    this.stripEl = el.querySelector('.strip');
-    for (let i = 0; i < NUM_LEDS; i++) this.stripEl.appendChild(document.createElement('i'));
+// ---- Building an outgoing lamp packet -------------------------------------
+// Same 19-byte layout as the standalone firmware and LampModule: magic, type,
+// counter(4), payload(4), node(4), code(4), flags(1).
+function buildLampPayload(type, payload32, powered) {
+  const b = new Uint8Array(LAMP_LEN);
+  const dv = new DataView(b.buffer);
+  b[0] = LAMP_MAGIC;
+  b[1] = type;
+  dv.setUint32(2, lampCounter, true);
+  dv.setUint32(6, payload32 >>> 0, true);
+  dv.setUint32(10, BROWSER_NODE_ID, true);
+  dv.setUint32(14, 0, true); // code: LampModule recomputes its own fingerprint on apply
+  b[18] = powered ? 1 : 0;
+  return b;
+}
 
-    el.querySelector('.connect').onclick = () => this.toggle();
-    el.querySelectorAll('.act').forEach(b => b.onclick = () => this.send(b.dataset.cmd));
+async function sendLampPacket(type, payload32, powered) {
+  lampCounter += 1; // strictly increasing beats any real counter (see README)
+  const lampBytes = buildLampPayload(type, payload32, powered !== false);
 
-    const slide = (cls, cmd, fmt, live) => {
-      const s = el.querySelector('.s-' + cls), v = el.querySelector('.v-' + cls);
-      const apply = () => {
-        v.textContent = fmt(s.value);
-        this.send(cmd + ' ' + s.value);
-      };
-      // Fire on release, not on every pixel of drag: each change is a serial
-      // command, and a dragged slider would otherwise flood the link.
-      s.onchange = apply;
-      s.oninput = () => { v.textContent = fmt(s.value); if (live) apply(); };
-    };
-    // ---- real colour picking -------------------------------------------
-    // The palette slider can only travel warm-white -> tint along one axis, so
-    // most of the colour space is unreachable with it. The picker sends an
-    // explicit RGBW, which the firmware treats as a chosen colour rather than a
-    // generated scene, and broadcasts to the other lamp.
-    const colourEl = el.querySelector('.s-colour');
-    const whiteEl = el.querySelector('.s-white');
-    const sendColour = () => {
-      const hex = colourEl.value;
-      const r = parseInt(hex.slice(1, 3), 16);
-      const g = parseInt(hex.slice(3, 5), 16);
-      const b = parseInt(hex.slice(5, 7), 16);
-      const w = +whiteEl.value;
-      el.querySelector('.v-colour').textContent = `${r},${g},${b} w${w}`;
-      el.querySelector('.v-white').textContent = w;
-      this.paintAll(r, g, b, w);
-      this.send(`colour ${r} ${g} ${b} ${w}`);
-    };
-    colourEl.onchange = sendColour;
-    whiteEl.onchange = sendColour;
-    whiteEl.oninput = () => el.querySelector('.v-white').textContent = whiteEl.value;
+  let data = [];
+  data = data.concat(fieldVarint(1, PRIVATE_APP_PORTNUM));
+  data = data.concat(fieldBytes(2, lampBytes));
 
-    // A few presets, because dragging a colour well to "warm white" is fiddly
-    // and these are the ones a lamp actually wants.
-    const PRESETS = [
-      ['#ffb347', 160, 'warm white'], ['#ffffff', 255, 'cool white'],
-      ['#ff2d2d', 0, 'red'],          ['#ff7a00', 40, 'amber'],
-      ['#ff00a0', 0, 'pink'],         ['#8a2dff', 0, 'violet'],
-      ['#2d6bff', 0, 'blue'],         ['#00d4c8', 0, 'teal'],
-      ['#3ddc4a', 0, 'green'],
-    ];
-    const sw = el.querySelector('.swatches');
-    for (const [hex, w, title] of PRESETS) {
-      const i = document.createElement('i');
-      i.style.background = hex; i.title = title;
-      i.onclick = () => { colourEl.value = hex; whiteEl.value = w; sendColour(); };
-      sw.appendChild(i);
-    }
+  let packet = [];
+  packet = packet.concat(fieldFixed32(2, BROADCAST_ADDR)); // to
+  packet = packet.concat(fieldBytes(4, data));              // decoded
+  packet = packet.concat(fieldVarint(11, PRIORITY_HIGH));   // priority
 
-    slide('bright', 'bright', v => (+v).toFixed(2));
-    slide('pos', 'pos', v => (+v).toFixed(2));
-    slide('groups', 'groups', v => v === '0' ? 'random' : v);
-    slide('fade', 'fade', v => v);
-    slide('breathe', 'breathe', v => (+v).toFixed(2));
-    slide('drift', 'drift', v => v === '0' ? 'off' : v + ' s');
-    el.querySelector('.s-drift').value = 0;
-    el.querySelector('.v-drift').textContent = 'off';
-  }
+  let toRadio = [];
+  toRadio = toRadio.concat(fieldBytes(1, packet));
 
-  setEnabled(on) {
-    this.connected = on;
-    this.el.querySelector('.dot').classList.toggle('on', on);
-    this.el.querySelectorAll('button.act, input[type=range]').forEach(b => b.disabled = !on);
-    this.el.querySelector('.connect').textContent = on ? 'Disconnect' : 'Connect';
-  }
+  const bytes = Uint8Array.from(toRadio);
+  await toRadioChar.writeValueWithResponse(bytes);
+  log(`sent type=${type} counter=${lampCounter}`, "ok");
+}
 
-  log(text, cls) {
-    const span = document.createElement('span');
-    if (cls) span.className = cls;
-    span.textContent = text + '\n';
-    this.logEl.appendChild(span);
-    this.logEl.scrollTop = this.logEl.scrollHeight;
-    while (this.logEl.childNodes.length > 300) this.logEl.removeChild(this.logEl.firstChild);
-  }
+// ---- Reading state back -----------------------------------------------
+function applyIncomingLamp(bytes) {
+  if (bytes.length !== LAMP_LEN || bytes[0] !== LAMP_MAGIC) return;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const type = bytes[1];
+  const counter = dv.getUint32(2, true);
+  const payload = dv.getUint32(6, true);
+  const node = dv.getUint32(10, true);
+  const powered = !!(bytes[18] & 1);
 
-  async toggle() {
-    if (this.connected) return this.disconnect();
-    try {
-      this.port = await navigator.serial.requestPort();
-      await this.port.open({ baudRate: 115200 });
-      this.writer = this.port.writable.getWriter();
-      this.setEnabled(true);
-      this.log('connected', 'rx');
-      this.read();
-      setTimeout(() => this.send('status'), 400);
-    } catch (e) {
-      this.log('connect failed: ' + e.message);
-    }
-  }
+  if (counter > lampCounter) lampCounter = counter; // stay ahead of the mesh too
 
-  async disconnect() {
-    try {
-      this.reading = false;
-      if (this.writer) { this.writer.releaseLock(); this.writer = null; }
-      if (this.reader) { await this.reader.cancel().catch(()=>{}); }
-      if (this.port) await this.port.close();
-    } catch (e) { /* the port may already be gone */ }
-    this.setEnabled(false);
-    this.log('disconnected');
-  }
+  const r = payload & 0xff, g = (payload >> 8) & 0xff, b = (payload >> 16) & 0xff, w = (payload >> 24) & 0xff;
+  document.getElementById("stripPreview").style.background =
+    `rgb(${Math.min(255, r + w * 0.6)}, ${Math.min(255, g + w * 0.4)}, ${Math.min(255, b + w * 0.2)})`;
+  setStatus(`type=${["", "scene", "power", "state", "colour"][type] || type} counter=${counter} power=${powered ? "on" : "off"} from=0x${node.toString(16)}`, true);
+}
 
-  async read() {
-    this.reading = true;
-    while (this.port && this.port.readable && this.reading) {
-      this.reader = this.port.readable.getReader();
-      try {
-        while (true) {
-          const { value, done } = await this.reader.read();
-          if (done) break;
-          this.buf += new TextDecoder().decode(value);
-          let i;
-          while ((i = this.buf.indexOf('\n')) >= 0) {
-            const line = this.buf.slice(0, i).replace(/\r$/, '');
-            this.buf = this.buf.slice(i + 1);
-            if (line.trim()) this.handle(line);
+function parseFromRadioPacket(bytes) {
+  // FromRadio { ... MeshPacket packet = 2; ... } - we only care about field 2.
+  for (const f of iterFields(bytes)) {
+    if (f.fieldNum === 2 && f.wireType === 2) {
+      for (const pf of iterFields(f.value)) {
+        if (pf.fieldNum === 4 && pf.wireType === 2) { // decoded Data
+          let portnum = null, payload = null;
+          for (const df of iterFields(pf.value)) {
+            if (df.fieldNum === 1 && df.wireType === 0) portnum = df.value;
+            if (df.fieldNum === 2 && df.wireType === 2) payload = df.value;
           }
+          if (portnum === PRIVATE_APP_PORTNUM && payload) applyIncomingLamp(payload);
         }
-      } catch (e) {
-        this.log('read error: ' + e.message);
-      } finally {
-        this.reader.releaseLock();
       }
     }
   }
+}
 
-  handle(line) {
-    this.log(line, line.startsWith('[rx]') ? 'rx' : null);
-    const node = line.match(/node=([0-9a-f]+)/);
-    if (node) this.el.querySelector('.node').textContent = '!' + node[1];
-    // Mirror the strip in the browser so the lamp without LEDs is still visible.
-    const pos = line.match(/\[pos\] ([\d.]+) -> rgbw\((\d+),(\d+),(\d+),(\d+)\)/);
-    if (pos) this.paintAll(+pos[2], +pos[3], +pos[4], +pos[5]);
-    const rgbw = line.match(/rgbw\((\d+),(\d+),(\d+),(\d+)\)/);
-    if (rgbw) { this.paintAll(+rgbw[1], +rgbw[2], +rgbw[3], +rgbw[4]); return; }
-    const seed = line.match(/seed=(\d+)/);
-    if (seed) this.paintScene(+seed[1]);
-  }
-
-  // A rough preview of what the strip is showing, derived from the same seed the
-  // firmware used. Deliberately approximate - it is a sanity check that both
-  // lamps agree, not a colour-accurate render.
-  paintScene(seed) {
-    let s = seed >>> 0 || 1;
-    const next = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s; };
-    const unit = () => (next() >>> 8) / 16777216;
-    const bands = 2 + Math.floor(unit() * 2);
-    const sizes = [];
-    let left = NUM_LEDS;
-    for (let i = 0; i < bands; i++) {
-      const size = (i === bands - 1) ? left : Math.max(8, Math.floor(left / (bands - i)));
-      sizes.push(size); left -= size;
-    }
-    const cells = this.stripEl.children;
-    let idx = 0;
-    for (const size of sizes) {
-      const p = unit();
-      const hue = (1 - p) * 40 + p * 300;
-      const col = `hsl(${hue}, ${20 + p * 70}%, ${55 - p * 10}%)`;
-      for (let k = 0; k < size && idx < NUM_LEDS; k++, idx++) cells[idx].style.background = col;
-    }
-  }
-
-  paintAll(r, g, b, w) {
-    const col = `rgb(${Math.min(255, r + w)},${Math.min(255, g + w)},${Math.min(255, b + w)})`;
-    for (const c of this.stripEl.children) c.style.background = col;
-  }
-
-  async send(cmd) {
-    if (!this.writer) return;
-    this.log('> ' + cmd, 'tx');
-    await this.writer.write(new TextEncoder().encode(cmd + '\n'));
+async function drainFromRadio() {
+  // Keep reading until the characteristic returns an empty value - that is
+  // Meshtastic's own signal for "queue empty", same as the phone app uses.
+  for (let guard = 0; guard < 32; guard++) {
+    const dv = await fromRadioChar.readValue();
+    if (dv.byteLength === 0) return;
+    parseFromRadioPacket(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
   }
 }
 
-if (!('serial' in navigator)) {
-  const n = document.getElementById('note');
-  n.className = 'note unsupported';
-  n.innerHTML = '<b>This browser has no Web Serial support.</b> Use Chrome, Edge or Arc. ' +
-                'Safari and Firefox do not implement the API.';
+// ---- UI wiring --------------------------------------------------------
+function setStatus(text, connected) {
+  document.getElementById("statusText").textContent = text;
+  document.getElementById("dot").className = "dot " + (connected ? "on" : "off");
+}
+function setControlsEnabled(enabled) {
+  for (const id of ["tapBtn", "powerBtn", "colourPicker", "warmth", "sendColourBtn"])
+    document.getElementById(id).disabled = !enabled;
 }
 
-new Lamp('Lamp A', 'has the LED strip');
-new Lamp('Lamp B', 'second lamp');
+async function connect() {
+  try {
+    log("requesting device...");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [MESH_SERVICE_UUID] }],
+      optionalServices: [MESH_SERVICE_UUID],
+    });
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+
+    log(`connecting to ${device.name || device.id}...`);
+    server = await device.gatt.connect();
+    const service = await server.getPrimaryService(MESH_SERVICE_UUID);
+    toRadioChar = await service.getCharacteristic(TORADIO_UUID);
+    fromRadioChar = await service.getCharacteristic(FROMRADIO_UUID);
+    fromNumChar = await service.getCharacteristic(FROMNUM_UUID);
+
+    await fromNumChar.startNotifications();
+    fromNumChar.addEventListener("characteristicvaluechanged", () => {
+      drainFromRadio().catch(e => log("read error: " + e.message, "err"));
+    });
+
+    setStatus(`connected: ${device.name || device.id}`, true);
+    setControlsEnabled(true);
+    document.getElementById("connectBtn").textContent = "Disconnect";
+    log("connected. If a pairing prompt appears, enter 123456.", "ok");
+
+    // First writes on a fresh bond can be rejected while the OS finishes the
+    // SMP pairing handshake that the encrypted characteristics require -
+    // this is normal, not a bug. Give it a moment, then it settles.
+    await drainFromRadio().catch(() => {});
+  } catch (e) {
+    log("connect failed: " + e.message, "err");
+  }
+}
+
+function onDisconnected() {
+  setStatus("not connected", false);
+  setControlsEnabled(false);
+  document.getElementById("connectBtn").textContent = "Connect";
+  log("disconnected");
+}
+
+async function withRetry(fn, label) {
+  try {
+    await fn();
+  } catch (e) {
+    log(`${label} failed (${e.message}), retrying once...`, "err");
+    await new Promise(r => setTimeout(r, 1500));
+    try { await fn(); log(`${label} ok on retry`, "ok"); }
+    catch (e2) { log(`${label} failed again: ${e2.message}`, "err"); }
+  }
+}
+
+document.getElementById("connectBtn").addEventListener("click", () => {
+  if (device && device.gatt.connected) { device.gatt.disconnect(); return; }
+  connect();
+});
+
+document.getElementById("tapBtn").addEventListener("click", () => {
+  const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+  withRetry(() => sendLampPacket(LAMP_SCENE, seed, true), "tap");
+});
+
+document.getElementById("powerBtn").addEventListener("click", () => {
+  withRetry(() => sendLampPacket(LAMP_POWER, 0, powerState = !powerState), "power");
+});
+let powerState = true;
+
+document.getElementById("sendColourBtn").addEventListener("click", () => {
+  const hex = document.getElementById("colourPicker").value; // "#rrggbb"
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  const w = parseInt(document.getElementById("warmth").value, 10);
+  const payload = (r | (g << 8) | (b << 16) | (w << 24)) >>> 0;
+  withRetry(() => sendLampPacket(LAMP_COLOUR, payload, true), "colour");
+});
+
+if (!navigator.bluetooth) {
+  setStatus("Web Bluetooth not available in this browser", false);
+  document.getElementById("connectBtn").disabled = true;
+  log("Web Bluetooth is unavailable - use Chrome or Edge.", "err");
+}
 </script>
 </body>
 </html>

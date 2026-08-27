@@ -30,7 +30,7 @@ hear each other.
 | Browser control | working — Web Serial, colour picker |
 | Meshtastic build | working — mesh range + phone app, ~10 s |
 | State persistence | fast build only — survives a power cut |
-| Capacitive touch | code written, **pad not yet wired** |
+| Capacitive touch | TTP223 module, wiring in progress on lamp B |
 
 Both lamps currently run the **Meshtastic** build (EU_868, LongFast, default
 channel), see each other, and hold the fast build in the second flash slot.
@@ -45,7 +45,7 @@ channel), see each other, and hold the fast build in the second flash slot.
 | Wio-SX1262 LoRa module ×2 | 868 MHz, wired to the header (see below) |
 | SK6812 RGBW strip | 39 LEDs per lamp, GRBW byte order |
 | 330 Ω resistor | series on DIN, prevents ringing |
-| 1 MΩ resistor | touch pad to GND |
+| TTP223 touch module ×2 | digital touch output, no external resistor needed |
 | 5 V supply, ≥3 A | **not** the XIAO's 5 V pin — see [Power](#power) |
 | 1000 µF capacitor | across the strip's supply at the DIN end |
 
@@ -60,8 +60,9 @@ channel), see each other, and hold the fast build in the second flash slot.
                                            │ ← must be common
   XIAO GND ────────────────────────────────┘
   XIAO D6 (GPIO43) ──[330 Ω]──────────────► DIN
-  XIAO D7 (GPIO44) ──┬─────────────────────► touch pad
-                     └──[1 MΩ]────────────► GND
+  XIAO D7 (GPIO44) ◄───────────────────────  OUT   TTP223 module
+  XIAO 3V3 ─────────────────────────────────► VCC  TTP223 module
+  XIAO GND ─────────────────────────────────► GND  TTP223 module
 ```
 
 ### Pin budget

@@ -9,6 +9,10 @@ meshtastic-firmware/
 firmware/*.bin
 firmware/*.zip
 
+# full-flash backups taken before reflashing a board (8 MB each) - local
+# safety copies, not source; re-taken every time, not worth version history
+firmware/backups/
+
 # arduino-cli build output
 **/build/
 

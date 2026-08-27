@@ -30,7 +30,10 @@ static const meshtastic_MeshPacket_Priority LAMP_PRIORITY = meshtastic_MeshPacke
 
 // How often to re-announce. A tap is sent once with no retry, so without this a
 // single lost packet would leave the lamps disagreeing indefinitely.
-static const uint32_t STATE_INTERVAL_MS = 30000;
+// Announcements are cheap but not free, and every one competes with whatever
+// the phone is doing. A minute is ample: it is a safety net against a lost
+// packet, not the mechanism by which taps propagate.
+static const uint32_t STATE_INTERVAL_MS = 60000;
 
 void LampModule::sendState(uint8_t type)
 {
@@ -148,6 +151,24 @@ void LampModule::render()
     strip_.show();
 }
 
+// Write-only: prints the raw pin state and smoothed level on every touched/
+// idle transition, plus a slow heartbeat (every 2 s) while held, so wiring
+// and threshold tuning can be watched live in the normal log stream - no
+// input needed, so nothing here competes with Meshtastic's own serial API.
+void LampModule::debugTouch()
+{
+    uint32_t now = millis();
+    bool touched = touch_.level() >= TOUCH_THRESHOLD;
+    bool edge = touched != touchWasTouched_;
+    bool heartbeat = touched && (now - lastTouchLog_ >= 2000);
+    if (edge || heartbeat) {
+        LOG_INFO("Touch GPIO%d: raw=%d level=%.2f threshold=%.2f -> %s", PIN_TOUCH, touch_.raw() ? 1 : 0,
+                 touch_.level(), TOUCH_THRESHOLD, touched ? "TOUCHED" : "idle");
+        lastTouchLog_ = now;
+    }
+    touchWasTouched_ = touched;
+}
+
 int32_t LampModule::runOnce()
 {
     if (!booted_) {
@@ -164,6 +185,8 @@ int32_t LampModule::runOnce()
                  NUM_LEDS, PIN_LED_DATA, PIN_TOUCH);
     }
 
+    debugTouch();
+
     TouchSensor::Event ev = touch_.update();
     if (ev == TouchSensor::TAP) {
         localTap();
@@ -175,11 +198,18 @@ int32_t LampModule::runOnce()
         sendState(LAMP_POWER);
     }
 
+    // Refresh hard only while something is moving. A settled strip still
+    // breathes, but slowly, and 20 fps is indistinguishable for that - while
+    // costing a third of the interrupt pressure that 60 fps does. Inside
+    // Meshtastic that pressure is not free: it lands on the same core as the
+    // BLE and LoRa stacks, and showed up as an unstable phone connection.
     uint32_t now = millis();
-    if (now - lastFrame_ >= 16) { lastFrame_ = now; engine_.tick(now); render(); }
+    uint32_t period = engine_.isFading() ? 16 : 50;
+    if (now - lastFrame_ >= period) { lastFrame_ = now; engine_.tick(now); render(); }
     if (now - lastState_ > STATE_INTERVAL_MS + (nodeDB->getNodeNum() % 5000))
         sendState(engine_.isSolid() ? LAMP_COLOUR : LAMP_STATE);
 
-    // 16 ms keeps the fades at ~60 fps without starving the mesh stack.
-    return 16;
+    // Yield for longer when nothing is animating, so the mesh and BLE stacks get
+    // the core back.
+    return engine_.isFading() ? 16 : 40;
 }

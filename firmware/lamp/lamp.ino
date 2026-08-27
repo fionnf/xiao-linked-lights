@@ -6,8 +6,7 @@
 //
 // Wiring (see README.md for why these pins and nothing else):
 //     D6 (GPIO43) --[330R]--> DIN     SK6812 RGBW strip
-//     D7 (GPIO44) --+-------> touch pad
-//                   +--[1M]-> GND
+//     D7 (GPIO44) <---------- OUT     TTP223 touch module (VCC/GND -> 3V3/GND)
 //     strip VCC/GND from an external 5 V supply, ground shared with the XIAO
 //
 // Serial control, at 115200 - so colours can be driven without touching a pad:
@@ -211,8 +210,9 @@ static void handleSerial() {
                     (unsigned long)nodeId, (unsigned long)radioLink.counter(),
                     (unsigned long)engine.seed(), engine.poweredOn() ? "on" : "off",
                     radioOk ? "ok" : "DOWN");
-      Serial.printf("touch: last=%.1f baseline=%.1f threshold=%.1f\n",
-                    touch.last(), touch.baseline(), touch.baseline() * TOUCH_THRESHOLD);
+      Serial.printf("touch: pin GPIO%d raw=%d level=%.2f threshold=%.2f -> %s\n",
+                    PIN_TOUCH, touch.raw() ? 1 : 0, touch.level(), TOUCH_THRESHOLD,
+                    touch.level() >= TOUCH_THRESHOLD ? "TOUCHED" : "idle");
       Serial.printf("radio: last rssi=%.1f dBm snr=%.1f dB\n",
                     radioLink.lastRssi(), radioLink.lastSnr());
     } else if (!strncmp(line, "groups ", 7)) {
@@ -283,21 +283,23 @@ static void handleSerial() {
                     (unsigned long)engine.visualCode(),
                     (unsigned long)radioLink.counter(), (unsigned long)engine.seed());
     } else if (!strcmp(line, "touchmon")) {
-      // Live readings while the pad is being wired. A pin with nothing attached
-      // sits at the 20000 safety cap because it never discharges; once the 1M
-      // resistor is present the value drops to a few hundred and rises when
-      // touched. Watching that transition is far quicker than guessing.
-      Serial.println("[touchmon] 15 s of live readings - touch the pad to see it move");
-      Serial.println("           raw    baseline   ratio   (ratio > threshold = touch)");
+      // Live readings while the module is being wired or the threshold is
+      // being tuned. raw is the instantaneous pin state; level is the
+      // smoothed 0..1 value TOUCH_THRESHOLD is actually compared against -
+      // watch level, not raw, to judge whether TOUCH_THRESHOLD needs moving.
+      Serial.printf("[touchmon] 15 s of live readings, GPIO%d, threshold=%.2f\n",
+                    PIN_TOUCH, TOUCH_THRESHOLD);
+      Serial.println("           raw   level  bar");
       uint32_t until = millis() + 15000;
       while (millis() < until) {
         touch.update();
-        float raw = touch.last(), base = touch.baseline();
-        float ratio = base > 0 ? raw / base : 0;
-        Serial.printf("        %7.0f  %8.0f   %5.2f  %s\n", raw, base, ratio,
-                      ratio > TOUCH_THRESHOLD ? "<< TOUCH" :
-                      (raw > 19000 ? "(nothing connected?)" : ""));
-        delay(250);
+        int bars = (int)(touch.level() * 20.0f + 0.5f);
+        char bar[21];
+        for (int i = 0; i < 20; i++) bar[i] = i < bars ? '#' : '.';
+        bar[20] = '\0';
+        Serial.printf("        %3d   %.2f  [%s]%s\n", touch.raw() ? 1 : 0, touch.level(), bar,
+                      touch.level() >= TOUCH_THRESHOLD ? " << TOUCHED" : "");
+        delay(100);
       }
       Serial.println("[touchmon] done");
     } else if (!strcmp(line, "test")) {
@@ -317,8 +319,10 @@ static void handleSerial() {
       Serial.println("[test] done - if the last lit LED was not the strip end, "
                      "NUM_LEDS is wrong");
     } else if (!strcmp(line, "cal")) {
+      // No-op with a TTP223 - the module has no baseline to learn - kept as a
+      // command so old muscle memory / scripts don't just error out.
       touch.calibrate();
-      Serial.printf("[cal] baseline now %.1f\n", touch.baseline());
+      Serial.println("[cal] TTP223 is digital, nothing to calibrate");
     } else {
       Serial.printf("? unknown '%s'\n  tap | seed N | power | pos F | status | cal | "
                     "touchmon | test\n  groups N | bright F | fade N | breathe F | drift N\n",
@@ -344,7 +348,7 @@ void setup() {
   strip.show();
 
   touch.begin(PIN_TOUCH);
-  Serial.printf("touch baseline %.1f on GPIO%d\n", touch.baseline(), PIN_TOUCH);
+  Serial.printf("touch: TTP223 module on GPIO%d\n", PIN_TOUCH);
 
   radioOk = radioLink.begin(nodeId);
   Serial.printf("radio %s\n", radioOk ? "ready" : "FAILED TO START");

@@ -1,6 +1,6 @@
 #pragma once
 // ============================================================
-//  touch.h - TTP223 digital touch module
+//  LampTouch.h - TTP223 digital touch module
 // ============================================================
 // Wiring:
 //
@@ -27,7 +27,7 @@
 // threshold repeatedly (a hand held near the module, not a deliberate tap).
 
 #include <Arduino.h>
-#include "config.h"
+#include "LampConfig.h"
 
 class TouchSensor {
  public:
