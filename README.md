@@ -39,6 +39,11 @@ channel), see each other, and hold the fast build in the second flash slot.
 
 ## Control it: the Bluetooth web app
 
+**Just want to use the lamps?** [**web/README.md**](web/README.md) is the
+full step-by-step guide — opening the link, installing Bluefy on iPhone,
+what every control does, and troubleshooting touch/Bluetooth. The rest of
+this section is a quick reference.
+
 **<https://fionnf.github.io/xiao-linked-lights/>** — talks directly to
 Meshtastic's own BLE GATT service (the same one the official phone app uses),
 so nothing extra needs installing. Chrome or Edge, desktop or Android.
