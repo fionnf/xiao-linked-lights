@@ -63,8 +63,12 @@ port, exactly as a tap on the lamp itself would.</div>
 
 <div class="warn">
   <strong>First connection:</strong> your OS will show a native Bluetooth pairing
-  prompt - enter <strong>123456</strong> (the lamps' fixed BLE PIN). Chrome/Edge only;
-  Safari and Firefox do not implement Web Bluetooth.
+  prompt - enter <strong>123456</strong> (the lamps' fixed BLE PIN). Chrome/Edge on
+  desktop or Android. <strong>On iOS</strong>, Safari (and everything else - Apple
+  requires all iOS browsers to use its engine) has no Web Bluetooth support at all -
+  install <a href="https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055"
+  style="color:#8fb4ff">Bluefy - Web BLE Browser</a> from the App Store and open this
+  page there instead.
 </div>
 
 <div class="card">
@@ -505,7 +509,28 @@ async function connect() {
     device.addEventListener("gattserverdisconnected", onDisconnected);
 
     log(`connecting to ${device.name || device.id}...`);
-    server = await device.gatt.connect();
+    // The actual GATT connect frequently fails once, right after the OS
+    // finishes bonding (a link-layer timing issue, not an app bug) - even
+    // when the OS already shows the device as paired. Retrying a couple of
+    // times, a beat apart, resolves it far more often than not; only surface
+    // an error - with the "forget the device" escalation - if it still
+    // won't connect.
+    let lastConnectErr;
+    server = null;
+    for (let attempt = 1; attempt <= 3 && !server; attempt++) {
+      try {
+        server = await device.gatt.connect();
+      } catch (e) {
+        lastConnectErr = e;
+        log(`GATT connect attempt ${attempt} failed (${e.message}), retrying...`, "err");
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+    if (!server) {
+      throw new Error(`${lastConnectErr.message} - paired but won't connect after 3 tries. ` +
+        `On the Mac: System Settings -> Bluetooth -> find this lamp -> Forget This Device, ` +
+        `then Connect again here to re-pair from scratch.`);
+    }
     const service = await server.getPrimaryService(MESH_SERVICE_UUID);
     toRadioChar = await service.getCharacteristic(TORADIO_UUID);
     fromRadioChar = await service.getCharacteristic(FROMRADIO_UUID);
@@ -630,9 +655,13 @@ document.getElementById("wifiDisableBtn").addEventListener("click", () => {
 });
 
 if (!navigator.bluetooth) {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   setStatus("Web Bluetooth not available in this browser", false);
   document.getElementById("connectBtn").disabled = true;
-  log("Web Bluetooth is unavailable - use Chrome or Edge.", "err");
+  log(isIOS
+    ? "iOS has no Web Bluetooth in any browser (Apple's own restriction) - install Bluefy from the App Store and open this page there."
+    : "Web Bluetooth is unavailable - use Chrome or Edge.", "err");
 }
 </script>
 </body>
