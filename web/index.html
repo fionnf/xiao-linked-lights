@@ -108,6 +108,27 @@ port, exactly as a tap on the lamp itself would.</div>
 </div>
 
 <div class="card">
+  <div class="row"><strong style="font-size:13px">Sunrise alarm</strong></div>
+  <div class="row" style="font-size:12px;color:#999">Local to this lamp only - it will not wake the
+    other one. Needs Wi-Fi connected above (for the time); ramps from a dim ember through to warm
+    white over the chosen duration.</div>
+  <div class="row">
+    <label style="width:70px">Time</label>
+    <input id="alarmTime" type="time" value="07:00" disabled
+           style="flex:1;background:#1c1c26;border:1px solid #3a3a4a;border-radius:8px;color:#eee;padding:8px 10px;font-size:14px">
+  </div>
+  <div class="row">
+    <label style="width:70px">Ramp</label>
+    <input type="range" id="alarmDuration" min="1" max="60" value="10" disabled>
+    <span id="alarmDurationValue" style="width:60px;text-align:right;font-size:12px;color:#aaa">10 min</span>
+  </div>
+  <div class="row">
+    <button id="alarmSetBtn" class="wide" disabled>Enable alarm</button>
+    <button id="alarmOffBtn" disabled>Disable</button>
+  </div>
+</div>
+
+<div class="card">
   <div class="row"><strong style="font-size:13px">Wi-Fi</strong></div>
   <div class="row" style="font-size:12px;color:#999">Meshtastic's own admin config, not the lamp
     protocol - takes ~15s to apply and the lamp reboots and drops this connection when it does.</div>
@@ -140,7 +161,8 @@ const FROMRADIO_UUID    = "2c55e69e-4993-11ed-b878-0242ac120002";
 const FROMNUM_UUID      = "ed9da18c-a800-4f66-a670-aa7547e34453";
 
 // ---- Lamp wire format (see LampModule.cpp / firmware/lamp/link.h) --------
-const LAMP_MAGIC = 0xC1, LAMP_SCENE = 1, LAMP_POWER = 2, LAMP_STATE = 3, LAMP_COLOUR = 4, LAMP_THRESHOLD = 5;
+const LAMP_MAGIC = 0xC1, LAMP_SCENE = 1, LAMP_POWER = 2, LAMP_STATE = 3, LAMP_COLOUR = 4,
+      LAMP_THRESHOLD = 5, LAMP_ALARM = 6;
 const LAMP_LEN = 19;
 const PRIVATE_APP_PORTNUM = 256;
 const PRIORITY_HIGH = 100;
@@ -402,7 +424,8 @@ function setStatus(text, connected) {
 function setControlsEnabled(enabled) {
   for (const id of ["tapBtn", "powerBtn", "colourPicker", "warmth", "sendColourBtn",
                      "rebootBtn", "thresholdSlider", "thresholdSetBtn",
-                     "wifiSsid", "wifiPsk", "wifiSaveBtn", "wifiDisableBtn"])
+                     "wifiSsid", "wifiPsk", "wifiSaveBtn", "wifiDisableBtn",
+                     "alarmTime", "alarmDuration", "alarmSetBtn", "alarmOffBtn"])
     document.getElementById(id).disabled = !enabled;
 }
 
@@ -457,6 +480,21 @@ async function setTouchThreshold(value) {
   log(`threshold set to ${value.toFixed(2)} on node 0x${node.toString(16)}`, "ok");
 }
 
+// ---- Sunrise alarm (lamp protocol, unicast, persisted on-device) ---------
+// Bit-packed to fit the lamp protocol's 4-byte payload field - matches the
+// layout LampModule.cpp decodes: enabled(1) | hour(5) | minute(6) | durationMin(20).
+async function setAlarm(hour, minute, durationMin, enabled) {
+  const node = await ensureOwnNodeNum();
+  const payload = ((enabled ? 1 : 0) | (hour << 1) | (minute << 6) | (durationMin << 12)) >>> 0;
+  await sendLampPacket(LAMP_ALARM, payload, true, node);
+  try {
+    localStorage.setItem("lamp.alarm." + node.toString(16),
+      JSON.stringify({ hour, minute, durationMin, enabled }));
+  } catch (e) {}
+  log(enabled ? `alarm set: ${String(hour).padStart(2,"0")}:${String(minute).padStart(2,"0")}, ${durationMin}min ramp`
+              : "alarm disabled", "ok");
+}
+
 async function connect() {
   try {
     log("requesting device...");
@@ -498,6 +536,14 @@ async function connect() {
         if (saved !== null) {
           document.getElementById("thresholdSlider").value = saved;
           document.getElementById("thresholdValue").textContent = parseFloat(saved).toFixed(2);
+        }
+        const savedAlarm = localStorage.getItem("lamp.alarm." + node.toString(16));
+        if (savedAlarm !== null) {
+          const a = JSON.parse(savedAlarm);
+          document.getElementById("alarmTime").value =
+            `${String(a.hour).padStart(2,"0")}:${String(a.minute).padStart(2,"0")}`;
+          document.getElementById("alarmDuration").value = a.durationMin;
+          document.getElementById("alarmDurationValue").textContent = `${a.durationMin} min`;
         }
       } catch (e) {}
     }).catch(e => log("node info: " + e.message, "err"));
@@ -553,6 +599,20 @@ document.getElementById("thresholdSlider").addEventListener("input", e => {
 document.getElementById("thresholdSetBtn").addEventListener("click", () => {
   const v = parseFloat(document.getElementById("thresholdSlider").value);
   withRetry(() => setTouchThreshold(v), "threshold");
+});
+
+document.getElementById("alarmDuration").addEventListener("input", e => {
+  document.getElementById("alarmDurationValue").textContent = `${e.target.value} min`;
+});
+document.getElementById("alarmSetBtn").addEventListener("click", () => {
+  const [h, m] = document.getElementById("alarmTime").value.split(":").map(Number);
+  const dur = parseInt(document.getElementById("alarmDuration").value, 10);
+  withRetry(() => setAlarm(h, m, dur, true), "alarm set");
+});
+document.getElementById("alarmOffBtn").addEventListener("click", () => {
+  const [h, m] = document.getElementById("alarmTime").value.split(":").map(Number);
+  const dur = parseInt(document.getElementById("alarmDuration").value, 10);
+  withRetry(() => setAlarm(h, m, dur, false), "alarm disable");
 });
 
 document.getElementById("rebootBtn").addEventListener("click", () => {

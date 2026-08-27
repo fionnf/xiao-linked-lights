@@ -54,6 +54,12 @@ class LampModule : public SinglePortModule, private concurrency::OSThread
     // own serial API/module, not a second consumer of the same bytes.
     void debugTouch();
 
+    // Sunrise alarm - deliberately local-only (see LampModule.cpp): renders
+    // straight to the strip, bypassing engine_/counter_/sendState entirely,
+    // so one lamp's alarm never wakes the other one.
+    void checkAlarm();
+    void renderAlarmRamp(float progress);
+
     Adafruit_NeoPixel strip_;
     ColourEngine engine_;
     TouchSensor touch_;
@@ -65,6 +71,15 @@ class LampModule : public SinglePortModule, private concurrency::OSThread
     bool booted_ = false;
     bool touchWasTouched_ = false;
     uint32_t lastTouchLog_ = 0;
+
+    bool alarmEnabled_ = false;
+    uint8_t alarmHour_ = 7;
+    uint8_t alarmMinute_ = 0;
+    uint16_t alarmDurationMin_ = 10;
+    bool alarmActive_ = false;
+    uint32_t alarmStartMs_ = 0;
+    int32_t alarmLastFiredKey_ = -1;  // (year<<9)|yday of the last day it fired
+    uint32_t lastAlarmFrame_ = 0;
 };
 
 extern LampModule *lampModule;
