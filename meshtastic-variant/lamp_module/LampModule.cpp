@@ -5,6 +5,7 @@
 #include "main.h"
 #include <Preferences.h>
 #include <Update.h>
+#include <ESPmDNS.h>
 #include <WiFi.h>
 #include <time.h>
 
@@ -338,6 +339,22 @@ void LampModule::maybeStartOta()
 {
     if (otaServer_ || WiFi.status() != WL_CONNECTED) return;
     otaServer_ = new WebServer(8080);
+
+    // mDNS: so the update page can be reached at lamp-d130.local:8080
+    // instead of making someone go hunting through their router for an IP
+    // address - the single biggest point of friction in the whole update
+    // flow otherwise. Works out of the box on macOS/iOS (Bonjour is part of
+    // the OS); Windows may need Apple's Bonjour Print Services or iTunes
+    // installed for .local names to resolve - the IP address always works
+    // as a fallback regardless of platform.
+    char hostname[16];
+    snprintf(hostname, sizeof(hostname), "lamp-%04x", (unsigned)(nodeDB->getNodeNum() & 0xFFFF));
+    if (MDNS.begin(hostname)) {
+        MDNS.addService("http", "tcp", 8080);
+        LOG_INFO("mDNS: reachable at %s.local:8080", hostname);
+    } else {
+        LOG_WARN("mDNS: failed to start - fall back to the IP address for OTA");
+    }
 
     otaServer_->on("/", HTTP_GET, [this]() {
         otaServer_->send(200, "text/plain",

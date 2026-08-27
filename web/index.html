@@ -162,17 +162,18 @@ port, exactly as a tap on the lamp itself would.</div>
   <div class="row" style="font-size:12px;color:#999;margin-top:6px">
     <span>
       <strong style="color:#d9b45c">Firmware update needs Wi-Fi, not this Bluetooth connection</strong> -
-      upload a <code>firmware-xiao-lamp-*.bin</code> (not <code>*.factory.bin</code>) to the lamp's own
-      address on your network, port 8080. It writes to the other flash slot and only switches to it if the
-      upload verifies, so a bad upload leaves the lamp running unaffected.
+      upload a <code>firmware-xiao-lamp-*.bin</code> (not <code>*.factory.bin</code>) to
+      <code>lamp-d130.local</code> / <code>lamp-d144.local</code> (or the lamp's IP address if that
+      doesn't resolve on your network), port 8080. It writes to the other flash slot and only switches
+      to it if the upload verifies, so a bad upload leaves the lamp running unaffected.
       <strong>Only works when this page itself is loaded over plain http://, not the https:// Pages
       link</strong> - browsers block a secure page from talking to a plain-http address on your LAN.
       Run <code>cd web &amp;&amp; python3 -m http.server 8765</code> and open it that way instead.
     </span>
   </div>
   <div class="row">
-    <label style="width:70px">Lamp IP</label>
-    <input id="otaHost" type="text" placeholder="192.168.1.42"
+    <label style="width:70px">Lamp address</label>
+    <input id="otaHost" type="text" placeholder="lamp-d130.local (or an IP address)"
            style="flex:1;background:#1c1c26;border:1px solid #3a3a4a;border-radius:8px;color:#eee;padding:8px 10px;font-size:14px">
   </div>
   <div class="row">
