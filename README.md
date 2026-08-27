@@ -167,38 +167,43 @@ they document the hardware, and each records what it ruled out.
 
 ---
 
-## Two firmwares
+## Two firmwares (and why the lamps no longer dual-boot between them)
 
-Both live in flash at once. They share an identical 8 MB partition table, so
-Meshtastic sits in `app0`, the direct-radio build in `app1`, and switching just
-repoints the bootloader — nothing is erased, nothing is downloaded.
+`firmware/lamp/` (fast, direct-radio, 0.21 s tap-to-sync, no phone app or web
+Bluetooth) and `meshtastic-variant/` (mesh-range, ~10 s, phone app, the
+Bluetooth web app, sunrise alarm, colour groups, tunable touch, Wi-Fi admin,
+firmware updates) both still exist and both still build. **Both lamps
+currently run Meshtastic only.**
 
-| | **fast** (`firmware/lamp/`) | **mesh** (`meshtastic-variant/`) |
-|---|---|---|
-| Tap → other lamp | **0.21 s** | ~10 s (1.5–17.5 s) |
-| Range | lamps must hear each other | any Meshtastic node relays |
-| Phone app | no | yes |
-| Bluetooth web app | no | **yes** |
-| Web Serial control | yes | no |
-| Sunrise alarm / colour groups / tunable touch / Wi-Fi admin | no | yes |
+They used to dual-boot: both firmwares lived in flash at once, in the two
+`app0`/`app1` OTA-capable partition slots, switched by hand (`mesh` on the
+fast build's serial console; a Meshtastic text message saying `lamp fast` to
+come back). That partition layout is *also* exactly the standard scheme
+ESP32's safe self-update mechanism expects — write the new image to
+whichever slot isn't currently running, verify it, only then switch the boot
+pointer — which is what makes [Wi-Fi firmware updates](web/README.md)
+possible without a USB cable. The two uses conflict: standard OTA assumes
+both slots hold the *same* firmware, one version behind the other, and would
+silently overwrite the fast build's slot with a Meshtastic update the first
+time it ran. Given the choice, safe Wi-Fi updates won over the 0.21 s
+alternate firmware. `firmware/lamp/` is kept for anyone who wants that
+latency badly enough to flash it manually over USB and give up OTA updates
+on that board — see [Getting started](#getting-started) below.
 
-All figures measured on this hardware. Meshtastic's delay is its transmit
-scheduling, not airtime — raising packets to `Priority_HIGH` changed nothing. The
-mesh build is the default: it has every control surface above, and the range/
-relay/phone-app benefits are worth more than the latency in normal use. Use
-**fast** only if you specifically want the sub-second link and don't need the
-rest.
+All figures above measured on this hardware. Meshtastic's delay is its
+transmit scheduling, not airtime — raising packets to `Priority_HIGH` changed
+nothing.
 
-**Switching:** type `mesh` on the fast build's serial console; send a Meshtastic
-text message saying exactly `lamp fast` to come back.
-
-### Use LongFast if you want the actual network
+### Use LongFast if you want the actual public network
 
 Meshtastic's public network runs on the **LongFast** preset. A faster preset like
 `SHORT_FAST` looks tempting for latency, but it changes the spreading factor and
 bandwidth — the lamps then cannot hear anyone else's node and nobody can hear
 them. They become a private two-node mesh that merely looks like Meshtastic. If
-the point is relaying, stay on LongFast.
+the point is relaying, stay on LongFast — or match whatever preset your local
+community mesh actually uses; e.g. [Swiss Mesh](https://swiss-mesh.ch) runs
+`MEDIUM_FAST` by convention, not the global default, and a lamp on the wrong
+preset can't hear that mesh at all, not just less well.
 
 ---
 

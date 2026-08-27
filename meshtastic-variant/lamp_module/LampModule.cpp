@@ -4,6 +4,8 @@
 #include "gps/RTC.h"
 #include "main.h"
 #include <Preferences.h>
+#include <Update.h>
+#include <WiFi.h>
 #include <time.h>
 
 LampModule *lampModule;
@@ -46,6 +48,7 @@ static const char *PREFS_ALARM_ON_KEY = "alarmOn";
 static const char *PREFS_ALARM_HOUR_KEY = "alarmHour";
 static const char *PREFS_ALARM_MIN_KEY = "alarmMin";
 static const char *PREFS_ALARM_DUR_KEY = "alarmDur";
+static const char *PREFS_ALARM_TZ_KEY = "alarmTz";
 
 // Sunrise ramp endpoints: starts as a dim ember, ends at the same warm white
 // the rest of the firmware treats as "home" (see BASE_WARM_WHITE). Both the
@@ -141,8 +144,17 @@ ProcessMessage LampModule::handleReceived(const meshtastic_MeshPacket &mp)
         alarmEnabled_ = payload & 1;
         alarmHour_ = (payload >> 1) & 0x1F;
         alarmMinute_ = (payload >> 6) & 0x3F;
-        alarmDurationMin_ = (payload >> 12) & 0xFFFFF;
+        alarmDurationMin_ = (payload >> 12) & 0x3FF;
         if (alarmDurationMin_ == 0) alarmDurationMin_ = 1;  // guard against div-by-zero in the ramp
+        // Quarter-hours, biased by +48 so -12:00..+14:00 fits unsigned in 7
+        // bits. Deliberately OUR OWN offset, not Meshtastic's device.tzdef:
+        // that defaults to GMT0 unless someone has explicitly set a POSIX TZ
+        // string on the node (these boards haven't), so trusting it would
+        // silently fire the alarm at the wrong wall-clock hour. See
+        // web/index.html's setAlarm(), which defaults this from the
+        // browser's own timezone.
+        int rawOffsetQtr = (int)((payload >> 22) & 0x7F) - 48;
+        alarmUtcOffsetSec_ = rawOffsetQtr * 15 * 60;
         alarmLastFiredKey_ = -1;  // a freshly (re)armed alarm should be able to fire today
         Preferences prefs;
         prefs.begin(PREFS_NAMESPACE, false);
@@ -150,9 +162,11 @@ ProcessMessage LampModule::handleReceived(const meshtastic_MeshPacket &mp)
         prefs.putUChar(PREFS_ALARM_HOUR_KEY, alarmHour_);
         prefs.putUChar(PREFS_ALARM_MIN_KEY, alarmMinute_);
         prefs.putUShort(PREFS_ALARM_DUR_KEY, alarmDurationMin_);
+        prefs.putInt(PREFS_ALARM_TZ_KEY, alarmUtcOffsetSec_);
         prefs.end();
-        LOG_INFO("Alarm %s %02u:%02u ramp=%umin (from 0x%x, saved)", alarmEnabled_ ? "set" : "cleared", alarmHour_,
-                 alarmMinute_, alarmDurationMin_, node);
+        LOG_INFO("Alarm %s %02u:%02u ramp=%umin utcOffset=%+.2fh (from 0x%x, saved)",
+                 alarmEnabled_ ? "set" : "cleared", alarmHour_, alarmMinute_, alarmDurationMin_,
+                 alarmUtcOffsetSec_ / 3600.0f, node);
         return ProcessMessage::STOP;
     }
 
@@ -258,11 +272,19 @@ void LampModule::debugTouch()
 void LampModule::checkAlarm()
 {
     if (!alarmEnabled_ || alarmActive_) return;
-    uint32_t nowSecs = getValidTime(RTCQualityNTP, true);  // local time; 0 if not yet synced
+    // Deliberately RAW UTC (local=false), then our own alarmUtcOffsetSec_
+    // added by hand - Meshtastic's own local-time support depends on
+    // device.tzdef, which defaults to GMT0 unless someone has explicitly set
+    // a POSIX TZ string on the node (these boards haven't). Trusting it would
+    // silently fire the alarm at the wrong wall-clock hour whenever that's
+    // unset, which is worse than an alarm that just does nothing until
+    // configured. alarmUtcOffsetSec_ comes from the app instead - see
+    // web/index.html's setAlarm(), defaulted from the browser's own timezone.
+    uint32_t nowSecs = getValidTime(RTCQualityNTP, false);  // 0 if not yet synced
     if (nowSecs == 0) return;
-    time_t t = (time_t)nowSecs;
+    time_t t = (time_t)nowSecs + alarmUtcOffsetSec_;
     struct tm tmNow;
-    gmtime_r(&t, &tmNow);  // getValidTime(..., true) already applied the local offset
+    gmtime_r(&t, &tmNow);
     if (tmNow.tm_hour != alarmHour_ || tmNow.tm_min != alarmMinute_) return;
 
     int32_t todayKey = ((int32_t)tmNow.tm_year << 9) | tmNow.tm_yday;
@@ -290,6 +312,73 @@ void LampModule::renderAlarmRamp(float progress)
     strip_.show();
 }
 
+// WiFi firmware update. Port 8080, not 80 - Meshtastic's own web server
+// (WebServerThread, started unconditionally on ESP32 unless
+// MESHTASTIC_EXCLUDE_WEBSERVER) already owns port 80.
+//
+// Safety: Update.begin(UPDATE_SIZE_UNKNOWN) calls esp_ota_get_next_update_
+// partition(), which always returns the app slot that is NOT currently
+// running - never the one executing this code. That matters on THIS chip
+// more than most: ESP32 executes code directly out of memory-mapped flash
+// (XIP), so erasing/rewriting the partition you are currently running from
+// is not just riskier, it reliably crashes the moment execution needs a
+// flash page that has just been erased out from under it. Update.end(true)
+// validates the uploaded image (size, magic byte, checksum) before ever
+// calling esp_ota_set_boot_partition() - a bad or partial upload leaves the
+// boot pointer untouched and this device keeps running exactly what it was
+// running before, unaffected.
+//
+// This is also why the old dual-boot trick (two DIFFERENT firmwares
+// deliberately living in app0/app1, switched by hand) is retired: standard
+// OTA's safety guarantee assumes both slots hold the SAME firmware lineage,
+// one version behind the other. Mixing that with "app1 is a different,
+// hand-placed firmware" would mean an OTA update overwrites - and destroys -
+// the other firmware without warning, the first time this feature is used.
+void LampModule::maybeStartOta()
+{
+    if (otaServer_ || WiFi.status() != WL_CONNECTED) return;
+    otaServer_ = new WebServer(8080);
+
+    otaServer_->on("/", HTTP_GET, [this]() {
+        otaServer_->send(200, "text/plain",
+                          String("lamp-ota ready\nnode=0x") + String(nodeDB->getNodeNum(), 16) +
+                              "\nfree_heap=" + String(ESP.getFreeHeap()) +
+                              "\nPOST a firmware-xiao-lamp-*.bin (NOT *.factory.bin) to /update\n");
+    });
+
+    otaServer_->on(
+        "/update", HTTP_POST,
+        [this]() {
+            bool ok = !Update.hasError();
+            otaServer_->sendHeader("Connection", "close");
+            otaServer_->send(200, "text/plain",
+                              ok ? "OK - verified, rebooting into new firmware"
+                                 : (String("FAILED (") + Update.errorString() + ") - firmware unchanged, still running the previous version"));
+            if (ok) {
+                delay(300);
+                ESP.restart();
+            }
+        },
+        [this]() {
+            HTTPUpload &upload = otaServer_->upload();
+            if (upload.status == UPLOAD_FILE_START) {
+                LOG_INFO("OTA: receiving %s", upload.filename.c_str());
+                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) LOG_ERROR("OTA: begin failed: %s", Update.errorString());
+            } else if (upload.status == UPLOAD_FILE_WRITE) {
+                if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+                    LOG_ERROR("OTA: write failed: %s", Update.errorString());
+            } else if (upload.status == UPLOAD_FILE_END) {
+                if (Update.end(true))
+                    LOG_INFO("OTA: %u bytes verified, will boot into new image on restart", upload.totalSize);
+                else
+                    LOG_ERROR("OTA: end/verify failed: %s", Update.errorString());
+            }
+        });
+
+    otaServer_->begin();
+    LOG_INFO("OTA server up on port 8080 (%s)", WiFi.localIP().toString().c_str());
+}
+
 int32_t LampModule::runOnce()
 {
     if (!booted_) {
@@ -306,6 +395,7 @@ int32_t LampModule::runOnce()
             alarmHour_ = prefs.getUChar(PREFS_ALARM_HOUR_KEY, alarmHour_);
             alarmMinute_ = prefs.getUChar(PREFS_ALARM_MIN_KEY, alarmMinute_);
             alarmDurationMin_ = prefs.getUShort(PREFS_ALARM_DUR_KEY, alarmDurationMin_);
+            alarmUtcOffsetSec_ = prefs.getInt(PREFS_ALARM_TZ_KEY, alarmUtcOffsetSec_);
             prefs.end();
             touch_.setThreshold(saved);
         }
@@ -319,6 +409,8 @@ int32_t LampModule::runOnce()
 
     debugTouch();
     checkAlarm();
+    maybeStartOta();
+    if (otaServer_) otaServer_->handleClient();
 
     if (alarmActive_) {
         // Entirely separate render path from the one below - deliberately

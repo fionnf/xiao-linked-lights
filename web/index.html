@@ -159,6 +159,32 @@ port, exactly as a tap on the lamp itself would.</div>
 <div class="card">
   <div class="row"><strong style="font-size:13px">Device</strong></div>
   <div class="row status"><span id="deviceInfo">node id unknown - connect first</span></div>
+  <div class="row" style="font-size:12px;color:#999;margin-top:6px">
+    <strong style="color:#d9b45c">Firmware update needs Wi-Fi, not this Bluetooth connection</strong> -
+    upload a <code>firmware-xiao-lamp-*.bin</code> (not <code>*.factory.bin</code>) to the lamp's own
+    address on your network, port 8080. It writes to the other flash slot and only switches to it if the
+    upload verifies, so a bad upload leaves the lamp running unaffected.
+    <strong>Only works when this page itself is loaded over plain http://, not the https:// Pages
+    link</strong> - browsers block a secure page from talking to a plain-http address on your LAN.
+    Run <code>cd web &amp;&amp; python3 -m http.server 8765</code> and open it that way instead.
+  </div>
+  <div class="row">
+    <label style="width:70px">Lamp IP</label>
+    <input id="otaHost" type="text" placeholder="192.168.1.42"
+           style="flex:1;background:#1c1c26;border:1px solid #3a3a4a;border-radius:8px;color:#eee;padding:8px 10px;font-size:14px">
+  </div>
+  <div class="row">
+    <input id="otaFile" type="file" accept=".bin" style="flex:1;font-size:12px;color:#aaa">
+  </div>
+  <div class="row">
+    <button id="otaUploadBtn" class="wide">Upload &amp; update</button>
+  </div>
+  <div class="row" id="otaProgressRow" style="display:none">
+    <div style="flex:1;height:8px;border-radius:4px;background:#232330;overflow:hidden">
+      <div id="otaProgressBar" style="height:100%;width:0%;background:#4a5fe8;transition:width 0.2s"></div>
+    </div>
+    <span id="otaProgressText" style="font-size:12px;color:#aaa;width:40px;text-align:right">0%</span>
+  </div>
   <div class="row" style="font-size:12px;color:#999">Touch sensitivity - lower = less sensitive.
     Saved on the lamp itself (survives reboot), and remembered here per-device.</div>
   <div class="row">
@@ -258,6 +284,7 @@ const PRIORITY_RELIABLE = 70;
 let device, server, toRadioChar, fromRadioChar, fromNumChar;
 let lampCounter = Math.floor(Date.now() / 1000); // see README: why unix time
 let ownNodeNum = null;
+let meshRefreshInterval = null;  // periodic re-request so the Mesh card stays current, not a one-shot
 let nodeInfoWaiters = [];   // resolved once my_info arrives
 let adminWaiters = [];      // [{resolve, reject, timer}], FIFO - matched to the next admin response
 
@@ -695,12 +722,21 @@ async function connect() {
         }
       } catch (e) {}
     }).catch(e => log("node info: " + e.message, "err"));
+
+    // Keep the Mesh card current for as long as the app stays open, not just
+    // a one-time snapshot at connect - a node.info dump only flows in
+    // response to a want_config request, so re-asking periodically is the
+    // only way to pick up nodes that join after we connected.
+    meshRefreshInterval = setInterval(() => {
+      sendWantConfig().catch(() => {});
+    }, 30000);
   } catch (e) {
     log("connect failed: " + e.message, "err");
   }
 }
 
 function onDisconnected() {
+  if (meshRefreshInterval) { clearInterval(meshRefreshInterval); meshRefreshInterval = null; }
   setStatus("not connected", false);
   setControlsEnabled(false);
   document.getElementById("connectBtn").textContent = "Connect";
@@ -887,6 +923,47 @@ document.getElementById("alarmOffBtn").addEventListener("click", () => {
 
 document.getElementById("rebootBtn").addEventListener("click", () => {
   withRetry(() => rebootDevice(), "reboot");
+});
+
+// ---- Firmware update over Wi-Fi (independent of the BLE connection above) --
+// Plain XHR, not fetch(), so upload.onprogress gives a real progress bar for
+// what can be a multi-megabyte file over a LAN link.
+document.getElementById("otaUploadBtn").addEventListener("click", () => {
+  const host = document.getElementById("otaHost").value.trim();
+  const fileInput = document.getElementById("otaFile");
+  const file = fileInput.files[0];
+  if (!host) { log("enter the lamp's IP address first", "err"); return; }
+  if (!file) { log("choose a firmware-xiao-lamp-*.bin file first", "err"); return; }
+  if (file.name.includes("factory")) {
+    log("that looks like a *.factory.bin (bootloader+partitions+app) - upload the plain " +
+        "firmware-xiao-lamp-*.bin instead, or this write will fail to verify", "err");
+  }
+
+  const progressRow = document.getElementById("otaProgressRow");
+  const progressBar = document.getElementById("otaProgressBar");
+  const progressText = document.getElementById("otaProgressText");
+  progressRow.style.display = "flex";
+  progressBar.style.width = "0%";
+  progressText.textContent = "0%";
+
+  const xhr = new XMLHttpRequest();
+  xhr.upload.addEventListener("progress", e => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round((e.loaded / e.total) * 100);
+    progressBar.style.width = pct + "%";
+    progressText.textContent = pct + "%";
+  });
+  xhr.addEventListener("load", () => {
+    log(`update response: ${xhr.responseText}`, xhr.status === 200 && xhr.responseText.startsWith("OK") ? "ok" : "err");
+  });
+  xhr.addEventListener("error", () => {
+    log("upload failed - couldn't reach the lamp at that address on port 8080. Check the IP, and " +
+        "that this page is loaded over http:// not https:// (browsers block a secure page from " +
+        "reaching a plain-http LAN address).", "err");
+  });
+  xhr.open("POST", `http://${host}:8080/update`);
+  xhr.send(file);
+  log(`uploading ${file.name} (${(file.size / 1024).toFixed(0)} KB) to ${host}:8080...`);
 });
 
 document.getElementById("wifiSaveBtn").addEventListener("click", () => {

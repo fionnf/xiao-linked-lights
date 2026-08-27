@@ -69,17 +69,50 @@ their own radio link; you don't need to connect to both.
   long-range radio, not just the other lamp. Mostly useful for checking the
   lamps are actually in contact with each other (they'll be `hop: 0` if
   they're hearing each other directly).
-- **Device** — shows this lamp's ID, and a **Touch threshold** slider — see
-  the touch section below — plus a **Reboot** button.
+- **Device** — shows this lamp's ID, a **Touch threshold** slider (see the
+  touch section below), a **Reboot** button, and **Firmware update** — see
+  its own section below, since it works differently from everything else
+  here (Wi-Fi, not this Bluetooth connection).
 - **Wi-Fi** — enter a network name and password so the lamp can get on the
-  internet (currently only used to know the time, for the alarm below — it
-  doesn't need Wi-Fi for the lamps to sync with each other). Saving it
-  reboots the lamp, which takes about 15 seconds and will disconnect this app
-  — reconnect once it's back.
+  internet (used for the time, for the alarm below, and for firmware
+  updates — it doesn't need Wi-Fi for the lamps to sync with each other).
+  Saving it reboots the lamp, which takes about 15 seconds and will
+  disconnect this app — reconnect once it's back.
 - **Sunrise alarm** — set a time and how long the ramp should take. At that
   time, *this* lamp (not the other one) gradually brightens from a dim ember
   colour up to warm white over the chosen duration. Needs Wi-Fi connected
   above so the lamp knows what time it is.
+
+---
+
+## 3b. Updating the lamp's firmware
+
+This is the one control that doesn't go through the Bluetooth connection
+above — it needs the lamp on Wi-Fi (set that up in the **Wi-Fi** card first),
+and it needs **this page loaded over plain `http://`, not the `https://`
+GitHub Pages link.** Browsers block a secure page from talking to a plain
+address on your home network, which is exactly what uploading to the lamp
+needs to do. Run it locally instead:
+
+```bash
+cd web && python3 -m http.server 8765
+open http://localhost:8765/
+```
+
+Then, under **Device → Firmware update**:
+
+1. Find the lamp's IP address on your network (check your router's device
+   list, or however you'd normally find a device's local IP) and enter it.
+2. Choose the firmware file — the plain `firmware-xiao-lamp-*.bin`, **not**
+   `*.factory.bin` (that one bundles the bootloader and partition table too,
+   and isn't what an update expects).
+3. Press **Upload & update**. A progress bar tracks the upload; the lamp
+   reboots into the new firmware automatically once it's verified.
+
+**If the upload fails, the lamp is unaffected** — it keeps running exactly
+what it was running before. The update is written to a separate area of
+flash first and only switches over once it's confirmed intact, the same
+safety mechanism any standard ESP32/Arduino OTA update relies on.
 
 ---
 
@@ -184,3 +217,26 @@ above automatically via `.github/workflows/pages.yml`.
   currently connected and persisted in that lamp's own NVS — the app's
   `localStorage` cache of them is a convenience for the slider's starting
   position, not the source of truth.
+- The Mesh card's node list re-requests every 30 s while connected
+  (`meshRefreshInterval`), not just once at connect - `FromRadio.node_info`
+  only flows in response to a fresh `want_config_id`, so a one-shot request
+  would miss nodes that join the mesh later in the session.
+
+### Firmware update endpoint
+
+`LampModule` runs its own tiny `WebServer` on **port 8080** (not 80 -
+Meshtastic's own web server already owns that) once Wi-Fi connects,
+`POST /update` writes straight through Arduino's `Update` library to
+`esp_ota_get_next_update_partition()` - always the app slot that is NOT
+currently running, never the one executing the update itself. That's a hard
+requirement on ESP32, not a nicety: it executes code directly out of
+memory-mapped flash, so self-overwriting the running partition reliably
+crashes mid-write rather than merely risking it. `Update.end(true)` verifies
+the image before ever moving the boot pointer, so a bad/partial upload
+leaves the device running whatever it was running before, untouched.
+
+This is also why the lamps no longer dual-boot two different firmwares (see
+the main README's "Two firmwares" section) - that used the same two
+partition slots to hold two genuinely different builds, which is
+incompatible with an OTA mechanism that assumes both slots hold the same
+firmware, one version behind the other.

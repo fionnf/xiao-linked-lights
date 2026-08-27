@@ -22,6 +22,7 @@
 #include "SinglePortModule.h"
 #include "concurrency/OSThread.h"
 #include <Adafruit_NeoPixel.h>
+#include <WebServer.h>
 
 #include "LampColour.h"
 #include "LampTouch.h"
@@ -60,6 +61,16 @@ class LampModule : public SinglePortModule, private concurrency::OSThread
     void checkAlarm();
     void renderAlarmRamp(float progress);
 
+    // WiFi firmware update - see LampModule.cpp for why this exists on its
+    // own port (8080) rather than reusing Meshtastic's own web server (which
+    // already owns port 80), and why it's safe to self-update at all despite
+    // this board's OTA-slot partition table having doubled as a manual
+    // dual-boot mechanism in the past (see git history / CLAUDE.md) - that
+    // usage is retired now specifically so Update.h's normal, safe
+    // "write the OTHER slot, verify, only then switch boot pointer" flow can
+    // be trusted here.
+    void maybeStartOta();
+
     Adafruit_NeoPixel strip_;
     ColourEngine engine_;
     TouchSensor touch_;
@@ -76,10 +87,13 @@ class LampModule : public SinglePortModule, private concurrency::OSThread
     uint8_t alarmHour_ = 7;
     uint8_t alarmMinute_ = 0;
     uint16_t alarmDurationMin_ = 10;
+    int32_t alarmUtcOffsetSec_ = 0;  // NOT Meshtastic's device.tzdef - see checkAlarm()
     bool alarmActive_ = false;
     uint32_t alarmStartMs_ = 0;
     int32_t alarmLastFiredKey_ = -1;  // (year<<9)|yday of the last day it fired
     uint32_t lastAlarmFrame_ = 0;
+
+    WebServer *otaServer_ = nullptr;
 };
 
 extern LampModule *lampModule;
