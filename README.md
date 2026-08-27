@@ -1,11 +1,9 @@
 # Linked Lamps
 
 Two lamps that always show the same colour. Touch one, both change — over 868 MHz
-LoRa, with no wifi, no hub, no server and no internet. Just power.
-
-A port of [linked_friend_lights](https://github.com/fionnf/linked_friend_lights)
-(Pico + wifi + MQTT) onto a radio link, so the lamps work anywhere the two can
-hear each other.
+LoRa, with no wifi required for the core link, no hub, no server. Control either
+lamp directly from a browser over Bluetooth: colour, sunrise alarm, touch
+sensitivity, Wi-Fi, and the mesh it's part of.
 
 ```
    ┌──────────────┐                                    ┌──────────────┐
@@ -23,17 +21,61 @@ hear each other.
 
 | | |
 |---|---|
-| Radio link | working — 211 ms, measured |
+| Radio link | working — 211 ms, measured (fast build); ~10 s (Meshtastic build) |
 | Colour sync | working, self-healing, fingerprint-verified |
 | LED strip | working — 39 SK6812 RGBW |
-| Startup animation | working |
-| Browser control | working — Web Serial, colour picker |
-| Meshtastic build | working — mesh range + phone app, ~10 s |
-| State persistence | fast build only — survives a power cut |
-| Capacitive touch | TTP223 module, wiring in progress on lamp B |
+| Capacitive touch | working — TTP223 module, tunable threshold, persisted on-device |
+| Sunrise alarm | working — per-lamp, hue + brightness ramp, NTP time |
+| Colour groups | working — 2–3 independently-coloured bands, set by hand |
+| Bluetooth web app | working — the primary control surface, see below |
+| Browser control (serial) | working — Web Serial, standalone/fast build only |
+| Meshtastic build | working — mesh range + phone app + web app, default |
+| State persistence | working on both builds — survives a power cut |
 
 Both lamps currently run the **Meshtastic** build (EU_868, LongFast, default
 channel), see each other, and hold the fast build in the second flash slot.
+
+---
+
+## Control it: the Bluetooth web app
+
+**<https://fionnf.github.io/xiao-linked-lights/>** — talks directly to
+Meshtastic's own BLE GATT service (the same one the official phone app uses),
+so nothing extra needs installing. Chrome or Edge, desktop or Android.
+
+**iOS has no Web Bluetooth in any browser** (Safari's engine has never
+implemented it, and Apple requires every iOS browser to use that engine) —
+install [Bluefy](https://apps.apple.com/app/bluefy-web-ble-browser/id1492822055)
+from the App Store and open the link there instead.
+
+First connection: the OS will show a native Bluetooth pairing prompt — enter
+**123456**.
+
+What it controls, live over BLE:
+
+- **Tap** a random scene, **Power** on/off (a smooth dim, not a flash), an
+  RGBW colour picker (sliders, hex input, or the firmware's own tint palette
+  as one-tap swatches)
+- **Colour groups** — drag 2 or 3 numbered handles on a hue bar to set each
+  band's colour by hand, instead of a generated scene
+- **Touch threshold** — the TTP223 module has no analog signal to threshold
+  in firmware, so this tunes a smoothed 0–1 "how touched" level instead; set
+  per-lamp, saved to NVS, survives a reboot
+- **Sunrise alarm** — a local wake-up ramp (dim ember → warm white) at a set
+  time and duration, per lamp; needs Wi-Fi below for the clock
+- **Wi-Fi** — reads and writes the device's real network config through
+  Meshtastic's admin protocol (not a custom hack), so it never disturbs
+  settings the app has no UI for
+- **Mesh** — every node in the lamp's on-radio database, not just the other
+  lamp: name, hop count, SNR, last heard
+- **Reboot**
+
+Run it locally instead of the Pages link if you're changing it:
+
+```bash
+cd web && python3 -m http.server 8765
+open http://localhost:8765/
+```
 
 ---
 
@@ -131,11 +173,16 @@ repoints the bootloader — nothing is erased, nothing is downloaded.
 | Tap → other lamp | **0.21 s** | ~10 s (1.5–17.5 s) |
 | Range | lamps must hear each other | any Meshtastic node relays |
 | Phone app | no | yes |
-| Browser control | yes | no |
+| Bluetooth web app | no | **yes** |
+| Web Serial control | yes | no |
+| Sunrise alarm / colour groups / tunable touch / Wi-Fi admin | no | yes |
 
 All figures measured on this hardware. Meshtastic's delay is its transmit
-scheduling, not airtime — raising packets to `Priority_HIGH` changed nothing. Use
-**fast** day to day; use **mesh** when the lamps are genuinely apart.
+scheduling, not airtime — raising packets to `Priority_HIGH` changed nothing. The
+mesh build is the default: it has every control surface above, and the range/
+relay/phone-app benefits are worth more than the latency in normal use. Use
+**fast** only if you specifically want the sub-second link and don't need the
+rest.
 
 **Switching:** type `mesh` on the fast build's serial console; send a Meshtastic
 text message saying exactly `lamp fast` to come back.
@@ -167,12 +214,20 @@ sequence is not portable, so the lamps would drift apart.
 ```
  0     magic 0xC1
  1     type: 1 SCENE · 2 POWER · 3 STATE · 4 COLOUR
+       Meshtastic build only, unicast to one lamp, not broadcast:
+       5 THRESHOLD (touch sensitivity) · 6 ALARM (sunrise) · 7 GROUPS (per-band hue)
  2..5  counter        (Lamport)
- 6..9  payload        (seed, or packed RGBW for a picked colour)
+ 6..9  payload        (seed, packed RGBW, or a type-specific bit-packed value)
 10..13 node id        (stable tiebreak)
 14..17 visual code    (fingerprint of exactly what is displayed)
 18     flags
 ```
+
+Types 1–4 are the original shared-state protocol both firmwares speak and
+broadcast, so both lamps converge. Types 5–7, added for the Bluetooth web app,
+are Meshtastic-build only: 5 and 6 are deliberately **unicast** and never
+synced — touch sensitivity and a wake alarm are per-device hardware settings,
+not shared strip state. 7 (colour groups) broadcasts and syncs like 1–4.
 
 ### Why they cannot drift apart
 
@@ -181,14 +236,13 @@ node id. Tap both lamps at once and they converge on one winner rather than
 ping-ponging.
 
 **Visual fingerprint.** An FNV-1a hash over the complete displayed state — mode,
-colour or seed, band count, every band length. Counters alone cannot catch two
-lamps that agree on a counter while showing different things; one number can.
+colour or seed, band count, every band length and hue. Counters alone cannot catch
+two lamps that agree on a counter while showing different things; one number can.
 Matching codes prove matching strips.
 
-**Periodic announcements.** A tap is sent once, with no ack and no retry, and LoRa
-drops packets. Each lamp re-announces every 15 s and answers immediately when it
-hears a stale neighbour. Verified by rebooting a lamp mid-session: it reconverged
-in 6 s with no tap.
+**Periodic announcements.** A tap is sent once, with no ack and no retry, and both
+LoRa and mesh relaying can drop packets. Each lamp re-announces roughly every
+minute and answers immediately when it hears a stale neighbour.
 
 ---
 
@@ -229,20 +283,17 @@ fade 120         crossfade frames (60 ≈ 1 s)
 breathe 0        idle shimmer depth
 drift 65         autonomous scene changes, 0 = off (default)
 
-touchmon         live touch readings — use while wiring the pad
-cal              re-baseline touch
+touchmon         live touch readings — raw pin state + smoothed level + threshold
+cal              reset the smoothed touch level
 ```
 
-### Browser control
-
-```bash
-cd web && python3 -m http.server 8765
-open http://localhost:8765/
-```
-
-Web Serial: Chrome, Edge or Arc only. Colour picker, white-channel slider,
-presets, live tuning and a per-lamp log. Close any serial monitor first — a port
-only supports one program.
+**On the Meshtastic build**, there is deliberately no equivalent serial console:
+Meshtastic's USB serial is Meshtastic's own framed API (what `meshtastic --info`
+and phone-over-USB use), and a module reading raw bytes off that same UART
+starves it — this was tried, broke the CLI/phone-over-USB connection on both
+boards, and was reverted. Touch tuning, status, and everything else on that
+build goes through the [Bluetooth web app](#control-it-the-bluetooth-web-app)
+instead.
 
 ### Phone app (mesh build)
 
@@ -287,13 +338,27 @@ it: `esptool --port <p> --chip esp32s3 --before no-reset --after no-reset read-m
 If that answers, the board is in download mode; boot it with
 `--after watchdog-reset`.
 
-**No other nodes in the node list** — check `rxBad` in the debug log. A non-zero
-value means foreign traffic is arriving but not decoding (wrong channel or PSK);
-zero means nothing else is transmitting in range at all, which is common indoors
-at 868 MHz. Try a window sill.
+**`meshtastic --info` times out, but the lamp works fine over BLE and its own
+log looks healthy** — this specific CLI handshake has been unreliable on this
+hardware throughout development, independent of firmware changes. A BLE scan
+(`Meshtastic_d1xx` advertising) or the web app connecting successfully is a
+more reliable health check than that one command.
 
-**Lamps show different colours** — compare `status` on both. The `code=` line is
-the fingerprint; if they differ, `sync` on either forces reconciliation.
+**Bluetooth shows "paired" in the OS but the web app's connection attempt
+fails** — usually a transient link-layer timing issue right after bonding; the
+app retries the connect step automatically. If it still won't connect, forget
+the device in the OS's Bluetooth settings and reconnect from the app to re-pair
+from scratch.
+
+**No other nodes in the node list** — check `rxBad` in the debug log, or the
+Mesh card in the web app. A non-zero `rxBad` means foreign traffic is arriving
+but not decoding (wrong channel or PSK); zero means nothing else is
+transmitting in range at all, which is common indoors at 868 MHz.
+
+**Lamps show different colours** — compare `status` on the fast build, or
+watch each lamp's log for its `code=` fingerprint on the Meshtastic build; if
+they differ, either `sync` (fast build) or waiting out the periodic
+re-announcement forces reconciliation.
 
 **Verify radio work against the chip, not the library.** Early on, two boards
 appeared to exchange packets at −40 dBm. They were not: every "packet" had an empty
@@ -308,14 +373,17 @@ RSSI jitter. Check `GetStatus` (0xC0), `GetIrqStatus` (0x12) and `GetDeviceError
 ## Layout
 
 ```
-firmware/lamp/        the fast, direct-radio firmware
-meshtastic-variant/   custom Meshtastic variant + the lamp module
-diagnostics/          bring-up sketches; each documents what it ruled out
-web/                  browser control panel (Web Serial)
-proto/                colour-sync protocol prototype in Python
-docs/                 Meshtastic reference, Seeed schematic, module datasheet
-tools/flash.sh        switch a board between the two firmwares
-CLAUDE.md             full engineering log — read before changing anything
+firmware/lamp/         the fast, direct-radio firmware
+meshtastic-variant/    custom Meshtastic variant + the lamp module (source of truth;
+                       meshtastic-firmware/ is a gitignored upstream clone built from it)
+diagnostics/           bring-up sketches; each documents what it ruled out
+web/                   index.html: Bluetooth control app (deployed via GitHub Pages)
+                       serial.html: Web Serial control app, standalone/fast build only
+.github/workflows/     Pages deploy for web/
+docs/                  Meshtastic reference, Seeed schematic, module datasheet
+firmware/backups/      full-flash dumps taken before reflashing (gitignored, local only)
+tools/flash.sh         switch a board between the two firmwares
+CLAUDE.md              full engineering log — read before changing anything
 ```
 
 ---

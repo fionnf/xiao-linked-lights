@@ -15,7 +15,7 @@
 // so both lamps - and any future firmware - agree exactly.
 
 #include <Arduino.h>
-#include "config.h"
+#include "LampConfig.h"
 
 struct Rgbw {
   uint8_t r, g, b, w;
@@ -103,6 +103,7 @@ class ColourEngine {
     if (!poweredOn_) return;
     seed_ = seed;
     solid_ = false;          // a new scene leaves picked-colour mode
+    groupsMode_ = false;      // ...and explicit-group-hue mode
     Rng rng(seed);
     // Drawn from the seed, so both lamps pick the SAME number of groups.
     active_ = groupsOverride_ > 0 ? groupsOverride_
@@ -127,9 +128,49 @@ class ColourEngine {
     solidTarget_ = c;
     solidStep_ = 0;
     solid_ = true;
+    groupsMode_ = false;
   }
   bool isSolid() const { return solid_; }
   Rgbw solidColour() const { return solidTarget_; }
+
+  // Explicit per-group hues, chosen by a human dragging handles on a hue bar
+  // rather than generated from a seed - the multi-group counterpart to
+  // setSolid(). Unlike a generated scene, group sizes don't need to be
+  // randomized: an even split reads cleanly when the groups were chosen
+  // on purpose. `count` is clamped to [1, MAX_GROUPS]; `pos` gives each
+  // group's 0..1 position along the same warm-white-to-tint palette
+  // paletteColour() already uses everywhere else.
+  void setGroupHues(int count, const float pos[]) {
+    if (!poweredOn_) return;
+    solid_ = false;
+    groupsMode_ = true;
+    active_ = constrain(count, 1, MAX_GROUPS);
+    int base = NUM_LEDS / active_, remainder = NUM_LEDS % active_;
+    for (int i = 0; i < MAX_GROUPS; i++) groupSize_[i] = 0;
+    for (int i = 0; i < active_; i++) groupSize_[i] = base + (i < remainder ? 1 : 0);
+    for (int i = 0; i < active_; i++) {
+      startPos_[i] = pos_[i];
+      targetPos_[i] = constrain(pos[i], 0.0f, 1.0f);
+      wStart_[i] = wLevel_[i];
+      wTarget_[i] = 1.0f;  // saturation is already carried by position itself
+      fadeStep_[i] = 0;
+    }
+  }
+  bool isGroupHues() const { return groupsMode_; }
+
+  // Re-derives the same bit-packed wire payload setGroupHues() was called
+  // with, for periodic re-announcement / catch-up replies - see
+  // LampModule::sendState(). Reconstructed from targetPos_ (the settled
+  // value), not pos_ (which may be mid-fade), so a peer that just joined
+  // gets where this lamp is HEADED, not a transient in-between colour.
+  uint32_t packedGroups() const {
+    uint32_t out = (uint32_t)(active_ - 1) & 0x3;
+    for (int i = 0; i < active_ && i < 3; i++) {
+      uint32_t q = (uint32_t)constrain(targetPos_[i] * 1023.0f, 0.0f, 1023.0f);
+      out |= q << (2 + i * 10);
+    }
+    return out;
+  }
 
   void togglePower() {
     poweredOn_ = !poweredOn_;
@@ -188,6 +229,13 @@ class ColourEngine {
     mix(solid_ ? packedSolid() : seed_);
     mix((uint32_t)active_);
     for (int i = 0; i < MAX_GROUPS; i++) mix((uint32_t)groupSize_[i]);
+    // Explicit per-group hues (setGroupHues) are NOT reproducible from seed_
+    // alone the way a generated scene is, so pos_ has to be hashed directly
+    // or two lamps showing genuinely different hues could still compute an
+    // identical code. Included unconditionally (harmless for the seed-derived
+    // case too, since pos_ there is just as real) rather than gated on
+    // groupsMode_, so this stays correct even if that flag is ever wrong.
+    for (int i = 0; i < MAX_GROUPS; i++) mix((uint32_t)(pos_[i] * 1000000.0f));
     return h;
   }
 
@@ -278,6 +326,7 @@ class ColourEngine {
   int fadeSteps_ = FADE_STEPS;
   float breatheDepth_ = BREATHE_DEPTH;
   bool solid_ = false;
+  bool groupsMode_ = false;
   Rgbw solidNow_{0,0,0,0}, solidStart_{0,0,0,0}, solidTarget_{0,0,0,0};
   int solidStep_ = 0;
 };

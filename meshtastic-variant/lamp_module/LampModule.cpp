@@ -32,6 +32,12 @@ static const uint8_t LAMP_THRESHOLD = 5;
 // alarm. payload bit-packs enabled(1) | hour(5) | minute(6) | durationMin(20)
 // - see LampModule::handleReceived and web/index.html's setAlarm().
 static const uint8_t LAMP_ALARM = 6;
+// Broadcast, syncs like LAMP_COLOUR/LAMP_SCENE - explicit per-group hues from
+// a human dragging handles on a hue bar, not a generated scene. Bit-packed:
+// (count-1)(2 bits) | pos0(10 bits) | pos1(10 bits) | pos2(10 bits), each
+// position quantized 0..1023 over 0.0..1.0 - see ColourEngine::setGroupHues/
+// packedGroups() and web/index.html's setGroupHues().
+static const uint8_t LAMP_GROUPS = 7;
 static const int LAMP_LEN = 19;
 
 static const char *PREFS_NAMESPACE = "lamp";
@@ -67,7 +73,9 @@ void LampModule::sendState(uint8_t type)
     p->priority = LAMP_PRIORITY;
     p->want_ack = false;
 
-    uint32_t payload = engine_.isSolid() ? engine_.packedSolid() : engine_.seed();
+    uint32_t payload = engine_.isSolid()     ? engine_.packedSolid()
+                        : engine_.isGroupHues() ? engine_.packedGroups()
+                                                 : engine_.seed();
     uint32_t me = nodeDB->getNodeNum();
     code_ = engine_.visualCode();
 
@@ -157,7 +165,7 @@ ProcessMessage LampModule::handleReceived(const meshtastic_MeshPacket &mp)
     // counters cannot resolve, so fall back to the node id.
     bool wins = counter > counter_ || (counter == counter_ && code != code_ && node > owner_);
     if (!wins) {
-        if (code != code_) sendState(engine_.isSolid() ? LAMP_COLOUR : LAMP_STATE);
+        if (code != code_) sendState(engine_.isSolid() ? LAMP_COLOUR : (engine_.isGroupHues() ? LAMP_GROUPS : LAMP_STATE));
         return ProcessMessage::STOP;
     }
 
@@ -171,9 +179,20 @@ ProcessMessage LampModule::handleReceived(const meshtastic_MeshPacket &mp)
         LOG_INFO("Lamp colour rgbw(%u,%u,%u,%u) from 0x%x", c.r, c.g, c.b, c.w, node);
     } else if (type == LAMP_POWER) {
         if (engine_.poweredOn() != on) {
+            // togglePower() alone is enough - ColourEngine already owns a
+            // smooth powerLevel_ fade (see LampColour.h) that render() picks
+            // up automatically. startupChain() is reserved for an actual
+            // device boot now, not a power-on request.
             engine_.togglePower();
-            if (engine_.poweredOn()) startupChain();
         }
+    } else if (type == LAMP_GROUPS) {
+        int count = (int)(payload & 0x3) + 1;
+        float pos[3];
+        pos[0] = (float)((payload >> 2) & 0x3FF) / 1023.0f;
+        pos[1] = (float)((payload >> 12) & 0x3FF) / 1023.0f;
+        pos[2] = (float)((payload >> 22) & 0x3FF) / 1023.0f;
+        engine_.setGroupHues(count, pos);
+        LOG_INFO("Lamp groups count=%d pos=[%.2f,%.2f,%.2f] from 0x%x", count, pos[0], pos[1], pos[2], node);
     } else {
         engine_.applyScene(payload);
         LOG_INFO("Lamp scene seed=%u from 0x%x", payload, node);
@@ -329,8 +348,7 @@ int32_t LampModule::runOnce()
     } else if (ev == TouchSensor::HOLD) {
         counter_++;
         owner_ = nodeDB->getNodeNum();
-        engine_.togglePower();
-        if (engine_.poweredOn()) startupChain();
+        engine_.togglePower();  // dims up/down via ColourEngine's own powerLevel_ fade
         sendState(LAMP_POWER);
     }
 
@@ -343,7 +361,7 @@ int32_t LampModule::runOnce()
     uint32_t period = engine_.isFading() ? 16 : 50;
     if (now - lastFrame_ >= period) { lastFrame_ = now; engine_.tick(now); render(); }
     if (now - lastState_ > STATE_INTERVAL_MS + (nodeDB->getNodeNum() % 5000))
-        sendState(engine_.isSolid() ? LAMP_COLOUR : LAMP_STATE);
+        sendState(engine_.isSolid() ? LAMP_COLOUR : (engine_.isGroupHues() ? LAMP_GROUPS : LAMP_STATE));
 
     // Yield for longer when nothing is animating, so the mesh and BLE stacks get
     // the core back.

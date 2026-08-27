@@ -40,6 +40,13 @@
   .swatch:hover { transform: scale(1.12); }
   .swatch:disabled { cursor: default; opacity: 0.4; }
   .swatch:disabled:hover { transform: none; }
+  .hue-handle {
+    position: absolute; top: 50%; width: 30px; height: 30px; border-radius: 50%;
+    background: #16161d; border: 2px solid #eee; color: #eee; font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    transform: translate(-50%, -50%); cursor: grab; user-select: none; touch-action: none;
+  }
+  .hue-handle:active { cursor: grabbing; }
   .strip {
     height: 28px; border-radius: 8px; margin-top: 14px;
     background: #222; transition: background 0.4s;
@@ -114,6 +121,30 @@ port, exactly as a tap on the lamp itself would.</div>
   <div class="row"><label>Warmth (W)</label><input type="range" id="warmth" min="0" max="255" value="120" disabled><span class="chVal" id="warmthVal">120</span></div>
 
   <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:6px" id="paletteRow"></div>
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <strong style="font-size:13px">Colour groups</strong>
+    <span style="display:flex;gap:6px">
+      <button id="groupCount2" class="wide" disabled style="padding:6px 12px;font-size:12px">2 groups</button>
+      <button id="groupCount3" class="wide" disabled style="padding:6px 12px;font-size:12px">3 groups</button>
+    </span>
+  </div>
+  <div class="row" style="font-size:12px;color:#999">Drag the numbered handles to set each group's hue -
+    splits the strip evenly and syncs to both lamps, same as Tap.</div>
+  <div class="row" style="margin-top:10px">
+    <div id="hueBar" style="position:relative;width:100%;height:34px;border-radius:17px;
+         background:linear-gradient(to right,
+           #ffc850,#ffa000,#ff7800,#ff3c00,#ff0000,#ff003c,#ff008c,#c800c8,
+           #8c00ff,#5000ff,#0000ff,#003cff,#008cff,#00c8ff,#00ffdc,#00ffa0,
+           #00ff50,#00dc00,#50ff00,#a0ff00,#dcff00,#fff000,#ffb428,#ff6450,
+           #ff50a0,#b428ff,#2864ff,#00b4b4,#14ff78,#ffdc78);
+         cursor:pointer;touch-action:none"></div>
+  </div>
+  <div class="row">
+    <button id="sendGroupsBtn" class="wide" disabled>Send groups</button>
+  </div>
 </div>
 
 <div class="card">
@@ -516,9 +547,13 @@ function setControlsEnabled(enabled) {
                      "warmth", "sendColourBtn",
                      "rebootBtn", "thresholdSlider", "thresholdSetBtn",
                      "wifiSsid", "wifiPsk", "wifiSaveBtn", "wifiDisableBtn",
-                     "alarmTime", "alarmDuration", "alarmSetBtn", "alarmOffBtn"])
+                     "alarmTime", "alarmDuration", "alarmSetBtn", "alarmOffBtn",
+                     "groupCount2", "groupCount3", "sendGroupsBtn"])
     document.getElementById(id).disabled = !enabled;
   document.querySelectorAll(".swatch").forEach(el => el.disabled = !enabled);
+  if (enabled) document.getElementById("hueBar").removeAttribute("disabled");
+  else document.getElementById("hueBar").setAttribute("disabled", "1");
+  renderHueHandles(); // re-attach or drop drag listeners to match
 }
 
 // ---- Wi-Fi (Meshtastic admin NetworkConfig) --------------------------
@@ -766,6 +801,66 @@ document.getElementById("sendColourBtn").addEventListener("click", () => {
   const w = parseInt(document.getElementById("warmth").value, 10);
   const payload = (r | (g << 8) | (b << 16) | (w << 24)) >>> 0;
   withRetry(() => sendLampPacket(LAMP_COLOUR, payload, true), "colour");
+});
+
+// ---- Colour groups: drag handles on a hue bar --------------------------
+// Bit-packing matches LampModule.cpp exactly: (count-1)(2 bits) |
+// pos0(10 bits) | pos1(10 bits) | pos2(10 bits), each position quantized
+// 0..1023 over 0.0..1.0.
+let groupPositions = [0.15, 0.85, 0.5];  // seeded near the reference screenshot
+let groupCount = 3;
+const hueBar = document.getElementById("hueBar");
+
+function renderHueHandles() {
+  hueBar.querySelectorAll(".hue-handle").forEach(el => el.remove());
+  for (let i = 0; i < groupCount; i++) {
+    const el = document.createElement("div");
+    el.className = "hue-handle";
+    el.textContent = String(i + 1);
+    el.style.left = `${groupPositions[i] * 100}%`;
+    el.dataset.index = i;
+    hueBar.appendChild(el);
+    if (!hueBar.hasAttribute("disabled")) attachDrag(el);
+  }
+}
+
+function attachDrag(handleEl) {
+  const idx = parseInt(handleEl.dataset.index, 10);
+  handleEl.addEventListener("pointerdown", e => {
+    if (handleEl.getAttribute("data-disabled") === "1") return;
+    handleEl.setPointerCapture(e.pointerId);
+    const move = ev => {
+      const rect = hueBar.getBoundingClientRect();
+      const pos = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+      groupPositions[idx] = pos;
+      handleEl.style.left = `${pos * 100}%`;
+    };
+    const up = () => {
+      handleEl.removeEventListener("pointermove", move);
+      handleEl.removeEventListener("pointerup", up);
+    };
+    handleEl.addEventListener("pointermove", move);
+    handleEl.addEventListener("pointerup", up);
+  });
+}
+
+function setGroupCount(n) {
+  groupCount = n;
+  document.getElementById("groupCount2").style.opacity = n === 2 ? "1" : "0.5";
+  document.getElementById("groupCount3").style.opacity = n === 3 ? "1" : "0.5";
+  renderHueHandles();
+}
+document.getElementById("groupCount2").addEventListener("click", () => setGroupCount(2));
+document.getElementById("groupCount3").addEventListener("click", () => setGroupCount(3));
+renderHueHandles();
+setGroupCount(3);
+
+document.getElementById("sendGroupsBtn").addEventListener("click", () => {
+  const quantize = p => Math.min(1023, Math.max(0, Math.round(p * 1023)));
+  let payload = (groupCount - 1) & 0x3;
+  for (let i = 0; i < groupCount && i < 3; i++) payload |= quantize(groupPositions[i]) << (2 + i * 10);
+  payload = payload >>> 0;
+  withRetry(() => sendLampPacket(LAMP_GROUPS, payload, true), "groups");
 });
 
 document.getElementById("thresholdSlider").addEventListener("input", e => {

@@ -2,8 +2,8 @@
 // ============================================================
 //  config.h - per-lamp tunables
 // ============================================================
-// Ported from config.py of the Pico/MQTT version, retuned for 39 LEDs and
-// for a XIAO ESP32-S3 whose pins are mostly consumed by the LoRa module.
+// Tuned for 39 LEDs and for a XIAO ESP32-S3 whose pins are mostly consumed
+// by the LoRa module.
 
 // ---- LED strip -------------------------------------------------------------
 // SK6812 RGBW, GRBW byte order, data in at the DIN end.
@@ -73,7 +73,9 @@ static const int GROUP_MIN_LEDS = 8;
 static const int GROUP_MAX_LEDS = 28;
 
 // ---- Fade / breathing ------------------------------------------------------
-static const int FADE_STEPS = 60;            // ~1 s at 60 fps
+// Slower than a snap: a tap should breathe into the new scene, not flash to
+// it. Fades run at one step per ~16 ms frame, so 180 steps is ~2.9 s.
+static const int FADE_STEPS = 180;
 static const float BREATHE_SPEED = 0.0008f;
 static const float BREATHE_DEPTH = 0.10f;
 // Autonomous scene changes are OFF by default. With two lamps each drifting,
